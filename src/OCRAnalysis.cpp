@@ -2322,9 +2322,11 @@ OCRAnalysis::renderElementsToPNG(const PDFElements &elements,
         cairo_save(cr);
         cairo_translate(cr, x, y);
 
-        // Scale to display dimensions
-        cairo_scale(cr, img.displayWidth / static_cast<double>(img.image.cols),
-                    img.displayHeight / static_cast<double>(img.image.rows));
+        // Scale image to match display dimensions in points
+        // displayWidth/Height are in points, image.cols/rows are in pixels
+        double scaleX = img.displayWidth / static_cast<double>(img.image.cols);
+        double scaleY = img.displayHeight / static_cast<double>(img.image.rows);
+        cairo_scale(cr, scaleX, scaleY);
 
         // Convert BGR to RGB
         cv::Mat rgbImage;
@@ -2374,7 +2376,7 @@ OCRAnalysis::renderElementsToPNG(const PDFElements &elements,
       result.elements.push_back(elem);
     }
 
-    // Draw text (already in top-left coordinates, no conversion needed)
+    // Draw text (PDF bottom-left origin -> convert to top-left)
     cairo_set_source_rgb(cr, 0.0, 0.0, 0.0);
     cairo_select_font_face(cr, "Sans", CAIRO_FONT_SLANT_NORMAL,
                            CAIRO_FONT_WEIGHT_NORMAL);
@@ -2382,7 +2384,9 @@ OCRAnalysis::renderElementsToPNG(const PDFElements &elements,
 
     for (const auto &text : elements.textLines) {
       double x = text.boundingBox.x - minX + margin;
-      double y = text.boundingBox.y - minY + margin + 10; // Baseline offset
+      // Convert from PDF bottom-left to Cairo top-left
+      double y = pageHeightPt - (text.boundingBox.y - minY) - margin +
+                 10; // Baseline offset
 
       cairo_move_to(cr, x, y);
       cairo_show_text(cr, text.text.c_str());
@@ -2391,7 +2395,8 @@ OCRAnalysis::renderElementsToPNG(const PDFElements &elements,
       RenderedElement elem;
       elem.type = RenderedElement::TEXT;
       elem.pixelX = static_cast<int>(x * scale);
-      elem.pixelY = static_cast<int>((y - 10) * scale);
+      elem.pixelY =
+          static_cast<int>((y - 10) * scale); // Subtract baseline offset
       elem.pixelWidth = static_cast<int>(text.boundingBox.width * scale);
       elem.pixelHeight = static_cast<int>(text.boundingBox.height * scale);
       elem.text = text.text;
