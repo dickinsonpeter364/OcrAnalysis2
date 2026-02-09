@@ -350,6 +350,10 @@ public:
     double linesBoundingBoxY = 0;      ///< Y position of interior box
     double linesBoundingBoxWidth = 0;  ///< Width of interior box
     double linesBoundingBoxHeight = 0; ///< Height of interior box
+
+    // Page crop box (defines the visible area of the page)
+    double pageWidth = 0;  ///< Page width in points
+    double pageHeight = 0; ///< Page height in points
   };
 
   /**

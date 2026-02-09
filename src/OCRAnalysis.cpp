@@ -714,10 +714,12 @@ public:
     const auto &ctm = state->getCTM(); // Returns std::array<double, 6>
     double x = ctm[4];                 // Translation X
     double y = ctm[5];                 // Translation Y
-    double displayWidth =
-        std::sqrt(ctm[0] * ctm[0] + ctm[1] * ctm[1]) * width / 72.0;
-    double displayHeight =
-        std::sqrt(ctm[2] * ctm[2] + ctm[3] * ctm[3]) * height / 72.0;
+
+    // Calculate display dimensions from CTM
+    // CTM contains the transformation matrix in points
+    // The magnitude of the transformation vectors gives us the display size
+    double displayWidth = std::sqrt(ctm[0] * ctm[0] + ctm[1] * ctm[1]);
+    double displayHeight = std::sqrt(ctm[2] * ctm[2] + ctm[3] * ctm[3]);
 
     // Determine image type and channels
     int nComps = colorMap->getNumPixelComps();
@@ -1431,6 +1433,16 @@ OCRAnalysis::extractPDFElements(const std::string &pdfPath, double minRectSize,
         result.pageCount = doc->pages();
         std::cerr << "DEBUG: Page count retrieved: " << result.pageCount
                   << std::endl;
+
+        // Get page dimensions from first page
+        std::unique_ptr<poppler::page> page(doc->create_page(0));
+        if (page) {
+          poppler::rectf pageRect = page->page_rect();
+          result.pageWidth = pageRect.width();
+          result.pageHeight = pageRect.height();
+          std::cerr << "DEBUG: Page dimensions: " << result.pageWidth << " x "
+                    << result.pageHeight << " points" << std::endl;
+        }
       }
     } catch (const std::exception &e) {
       std::cerr << "DEBUG: Exception getting page count: " << e.what()
@@ -2173,48 +2185,15 @@ OCRAnalysis::renderElementsToPNG(const PDFElements &elements,
   PNGRenderResult result;
 
   try {
-    // Find bounding box of all elements
-    double minX = std::numeric_limits<double>::max();
-    double minY = std::numeric_limits<double>::max();
-    double maxX = std::numeric_limits<double>::lowest();
-    double maxY = std::numeric_limits<double>::lowest();
+    // Use page dimensions as the rendering bounds (crop box)
+    // This ensures we only render the visible area of the page
+    double minX = 0;
+    double minY = 0;
+    double maxX = elements.pageWidth;
+    double maxY = elements.pageHeight;
 
-    // Check text lines (already in top-left coordinates)
-    for (const auto &text : elements.textLines) {
-      minX = std::min(minX, static_cast<double>(text.boundingBox.x));
-      minY = std::min(minY, static_cast<double>(text.boundingBox.y));
-      maxX = std::max(maxX, static_cast<double>(text.boundingBox.x +
-                                                text.boundingBox.width));
-      maxY = std::max(maxY, static_cast<double>(text.boundingBox.y +
-                                                text.boundingBox.height));
-    }
-
-    // Check images (PDF bottom-left coordinates)
-    for (const auto &img : elements.images) {
-      minX = std::min(minX, img.x);
-      minY = std::min(minY, img.y);
-      maxX = std::max(maxX, img.x + img.displayWidth);
-      maxY = std::max(maxY, img.y + img.displayHeight);
-    }
-
-    // Check rectangles (PDF bottom-left coordinates)
-    for (const auto &rect : elements.rectangles) {
-      minX = std::min(minX, rect.x);
-      minY = std::min(minY, rect.y);
-      maxX = std::max(maxX, rect.x + rect.width);
-      maxY = std::max(maxY, rect.y + rect.height);
-    }
-
-    // Check lines (PDF bottom-left coordinates)
-    for (const auto &line : elements.graphicLines) {
-      minX = std::min(minX, std::min(line.x1, line.x2));
-      minY = std::min(minY, std::min(line.y1, line.y2));
-      maxX = std::max(maxX, std::max(line.x1, line.x2));
-      maxY = std::max(maxY, std::max(line.y1, line.y2));
-    }
-
-    if (minX == std::numeric_limits<double>::max()) {
-      result.errorMessage = "No elements to render";
+    if (maxX == 0 || maxY == 0) {
+      result.errorMessage = "Invalid page dimensions";
       return result;
     }
 
