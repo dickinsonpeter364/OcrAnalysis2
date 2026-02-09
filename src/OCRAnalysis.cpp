@@ -2348,104 +2348,112 @@ OCRAnalysis::renderElementsToPNG(const PDFElements &elements,
     cairo_paint(cr);
 
     // Draw rectangles (PDF bottom-left origin -> convert to top-left)
-    // Only render rectangles within the crop box
-    cairo_set_source_rgb(cr, 0.8, 0.8, 0.8);
-    cairo_set_line_width(cr, 1.0 / scale);
-    for (const auto &rect : elements.rectangles) {
-      // Only render rectangles that are mostly inside the content area
-      // This prevents crop mark rectangles from being rendered
-      double rectLeft = std::max(rect.x, minX);
-      double rectTop = std::max(rect.y, minY);
-      double rectRight = std::min(rect.x + rect.width, maxX);
-      double rectBottom = std::min(rect.y + rect.height, maxY);
+    // DISABLED: Rectangles are structural/decorative elements (borders, crop
+    // marks) They should not be rendered in content extraction - only text and
+    // images matter
+    /*
+      cairo_set_source_rgb(cr, 0.8, 0.8, 0.8);
+      cairo_set_line_width(cr, 1.0 / scale);
+      for (const auto &rect : elements.rectangles) {
+        // Only render rectangles that are mostly inside the content area
+        // This prevents crop mark rectangles from being rendered
+        double rectLeft = std::max(rect.x, minX);
+        double rectTop = std::max(rect.y, minY);
+        double rectRight = std::min(rect.x + rect.width, maxX);
+        double rectBottom = std::min(rect.y + rect.height, maxY);
 
-      // Skip if rectangle is completely outside content area
-      if (rectLeft >= rectRight || rectTop >= rectBottom) {
-        continue;
+        // Skip if rectangle is completely outside content area
+        if (rectLeft >= rectRight || rectTop >= rectBottom) {
+          continue;
+        }
+
+        // Calculate what percentage of the rectangle is inside the content area
+        double clippedArea = (rectRight - rectLeft) * (rectBottom - rectTop);
+        double totalArea = rect.width * rect.height;
+        double insideRatio = clippedArea / totalArea;
+
+        // Only render if more than 50% of the rectangle is inside
+        if (insideRatio <= 0.5) {
+          continue;
+        }
+
+        // Use clipped dimensions for rendering
+        double clippedX = rectLeft;
+        double clippedY = rectTop;
+        double clippedWidth = rectRight - rectLeft;
+        double clippedHeight = rectBottom - rectTop;
+
+        double x = clippedX - minX + margin;
+        // Convert from PDF bottom-left to Cairo top-left
+        double y = pageHeightPt - (clippedY - minY + clippedHeight) - margin;
+        cairo_rectangle(cr, x, y, clippedWidth, clippedHeight);
+        cairo_stroke(cr);
+
+        // Add to result
+        RenderedElement elem;
+        elem.type = RenderedElement::RECTANGLE;
+        elem.pixelX = static_cast<int>(x * scale);
+        elem.pixelY = static_cast<int>(y * scale);
+        elem.pixelWidth = static_cast<int>(clippedWidth * scale);
+        elem.pixelHeight = static_cast<int>(clippedHeight * scale);
+        result.elements.push_back(elem);
       }
-
-      // Calculate what percentage of the rectangle is inside the content area
-      double clippedArea = (rectRight - rectLeft) * (rectBottom - rectTop);
-      double totalArea = rect.width * rect.height;
-      double insideRatio = clippedArea / totalArea;
-
-      // Only render if more than 50% of the rectangle is inside
-      if (insideRatio <= 0.5) {
-        continue;
-      }
-
-      // Use clipped dimensions for rendering
-      double clippedX = rectLeft;
-      double clippedY = rectTop;
-      double clippedWidth = rectRight - rectLeft;
-      double clippedHeight = rectBottom - rectTop;
-
-      double x = clippedX - minX + margin;
-      // Convert from PDF bottom-left to Cairo top-left
-      double y = pageHeightPt - (clippedY - minY + clippedHeight) - margin;
-      cairo_rectangle(cr, x, y, clippedWidth, clippedHeight);
-      cairo_stroke(cr);
-
-      // Add to result
-      RenderedElement elem;
-      elem.type = RenderedElement::RECTANGLE;
-      elem.pixelX = static_cast<int>(x * scale);
-      elem.pixelY = static_cast<int>(y * scale);
-      elem.pixelWidth = static_cast<int>(clippedWidth * scale);
-      elem.pixelHeight = static_cast<int>(clippedHeight * scale);
-      result.elements.push_back(elem);
-    }
+      */
 
     // Draw lines (PDF bottom-left origin -> convert to top-left)
-    // Only render lines within the crop box
-    cairo_set_source_rgb(cr, 0.0, 0.0, 0.0);
-    cairo_set_line_width(cr, 0.5 / scale);
-    for (const auto &line : elements.graphicLines) {
-      // Only render lines that are mostly inside the content area
-      // This prevents crop mark lines from being rendered
-      double lx1 = line.x1;
-      double ly1 = line.y1;
-      double lx2 = line.x2;
-      double ly2 = line.y2;
+    // DISABLED: Lines are structural/decorative elements (borders, crop marks,
+    // dividers) They should not be rendered in content extraction - only text
+    // and images matter
+    /*
+      cairo_set_source_rgb(cr, 0.0, 0.0, 0.0);
+      cairo_set_line_width(cr, 0.5 / scale);
+      for (const auto &line : elements.graphicLines) {
+        // Only render lines that are mostly inside the content area
+        // This prevents crop mark lines from being rendered
+        double lx1 = line.x1;
+        double ly1 = line.y1;
+        double lx2 = line.x2;
+        double ly2 = line.y2;
 
-      // Calculate original line length
-      double originalLength =
-          std::sqrt((lx2 - lx1) * (lx2 - lx1) + (ly2 - ly1) * (ly2 - ly1));
+        // Calculate original line length
+        double originalLength =
+            std::sqrt((lx2 - lx1) * (lx2 - lx1) + (ly2 - ly1) * (ly2 - ly1));
 
-      // Clip each endpoint to the bounding box
-      double clx1 = std::max(minX, std::min(maxX, lx1));
-      double cly1 = std::max(minY, std::min(maxY, ly1));
-      double clx2 = std::max(minX, std::min(maxX, lx2));
-      double cly2 = std::max(minY, std::min(maxY, ly2));
+        // Clip each endpoint to the bounding box
+        double clx1 = std::max(minX, std::min(maxX, lx1));
+        double cly1 = std::max(minY, std::min(maxY, ly1));
+        double clx2 = std::max(minX, std::min(maxX, lx2));
+        double cly2 = std::max(minY, std::min(maxY, ly2));
 
-      // Calculate clipped line length
-      double clippedLength = std::sqrt((clx2 - clx1) * (clx2 - clx1) +
-                                       (cly2 - cly1) * (cly2 - cly1));
+        // Calculate clipped line length
+        double clippedLength = std::sqrt((clx2 - clx1) * (clx2 - clx1) +
+                                         (cly2 - cly1) * (cly2 - cly1));
 
-      // Skip if line is completely outside or mostly outside
-      if (clippedLength == 0 ||
-          (originalLength > 0 && (clippedLength / originalLength) <= 0.5)) {
-        continue;
+        // Skip if line is completely outside or mostly outside
+        if (clippedLength == 0 ||
+            (originalLength > 0 && (clippedLength / originalLength) <= 0.5)) {
+          continue;
+        }
+
+        double x1 = clx1 - minX + margin;
+        double x2 = clx2 - minX + margin;
+        // Convert from PDF bottom-left to Cairo top-left
+        double y1 = pageHeightPt - (cly1 - minY) - margin;
+        double y2 = pageHeightPt - (cly2 - minY) - margin;
+        cairo_move_to(cr, x1, y1);
+        cairo_line_to(cr, x2, y2);
+        cairo_stroke(cr);
+
+        // Add to result
+        RenderedElement elem;
+        elem.type = RenderedElement::LINE;
+        elem.pixelX = static_cast<int>(std::min(x1, x2) * scale);
+        elem.pixelY = static_cast<int>(std::min(y1, y2) * scale);
+        elem.pixelWidth = static_cast<int>(std::abs(x2 - x1) * scale);
+        elem.pixelHeight = static_cast<int>(std::abs(y2 - y1) * scale);
+        result.elements.push_back(elem);
       }
-
-      double x1 = clx1 - minX + margin;
-      double x2 = clx2 - minX + margin;
-      // Convert from PDF bottom-left to Cairo top-left
-      double y1 = pageHeightPt - (cly1 - minY) - margin;
-      double y2 = pageHeightPt - (cly2 - minY) - margin;
-      cairo_move_to(cr, x1, y1);
-      cairo_line_to(cr, x2, y2);
-      cairo_stroke(cr);
-
-      // Add to result
-      RenderedElement elem;
-      elem.type = RenderedElement::LINE;
-      elem.pixelX = static_cast<int>(std::min(x1, x2) * scale);
-      elem.pixelY = static_cast<int>(std::min(y1, y2) * scale);
-      elem.pixelWidth = static_cast<int>(std::abs(x2 - x1) * scale);
-      elem.pixelHeight = static_cast<int>(std::abs(y2 - y1) * scale);
-      result.elements.push_back(elem);
-    }
+      */
 
     // Draw images (PDF bottom-left origin -> convert to top-left)
     // Only render images within the crop box
