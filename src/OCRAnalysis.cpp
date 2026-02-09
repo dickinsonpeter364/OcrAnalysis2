@@ -2187,13 +2187,20 @@ OCRAnalysis::renderElementsToPNG(const PDFElements &elements,
   try {
     // Find the actual bounding box of all elements to determine the offset
     // This allows us to normalize coordinates so rendering starts at (0,0)
+    // Only include elements that are within the crop box
     double minX = std::numeric_limits<double>::max();
     double minY = std::numeric_limits<double>::max();
     double maxX = std::numeric_limits<double>::lowest();
     double maxY = std::numeric_limits<double>::lowest();
 
-    // Check all elements to find actual bounds
+    // Check all elements to find actual bounds (only those within crop box)
     for (const auto &text : elements.textLines) {
+      // Skip elements outside crop box
+      if (text.boundingBox.x < 0 || text.boundingBox.y < 0 ||
+          text.boundingBox.x + text.boundingBox.width > elements.pageWidth ||
+          text.boundingBox.y + text.boundingBox.height > elements.pageHeight) {
+        continue;
+      }
       minX = std::min(minX, static_cast<double>(text.boundingBox.x));
       minY = std::min(minY, static_cast<double>(text.boundingBox.y));
       maxX = std::max(maxX, static_cast<double>(text.boundingBox.x +
@@ -2203,6 +2210,12 @@ OCRAnalysis::renderElementsToPNG(const PDFElements &elements,
     }
 
     for (const auto &img : elements.images) {
+      // Skip elements outside crop box
+      if (img.x < 0 || img.y < 0 ||
+          img.x + img.displayWidth > elements.pageWidth ||
+          img.y + img.displayHeight > elements.pageHeight) {
+        continue;
+      }
       minX = std::min(minX, img.x);
       minY = std::min(minY, img.y);
       maxX = std::max(maxX, img.x + img.displayWidth);
@@ -2210,6 +2223,12 @@ OCRAnalysis::renderElementsToPNG(const PDFElements &elements,
     }
 
     for (const auto &rect : elements.rectangles) {
+      // Skip elements outside crop box
+      if (rect.x < 0 || rect.y < 0 ||
+          rect.x + rect.width > elements.pageWidth ||
+          rect.y + rect.height > elements.pageHeight) {
+        continue;
+      }
       minX = std::min(minX, rect.x);
       minY = std::min(minY, rect.y);
       maxX = std::max(maxX, rect.x + rect.width);
@@ -2217,10 +2236,19 @@ OCRAnalysis::renderElementsToPNG(const PDFElements &elements,
     }
 
     for (const auto &line : elements.graphicLines) {
-      minX = std::min(minX, std::min(line.x1, line.x2));
-      minY = std::min(minY, std::min(line.y1, line.y2));
-      maxX = std::max(maxX, std::max(line.x1, line.x2));
-      maxY = std::max(maxY, std::max(line.y1, line.y2));
+      double lineMinX = std::min(line.x1, line.x2);
+      double lineMaxX = std::max(line.x1, line.x2);
+      double lineMinY = std::min(line.y1, line.y2);
+      double lineMaxY = std::max(line.y1, line.y2);
+      // Skip elements outside crop box
+      if (lineMinX < 0 || lineMinY < 0 || lineMaxX > elements.pageWidth ||
+          lineMaxY > elements.pageHeight) {
+        continue;
+      }
+      minX = std::min(minX, lineMinX);
+      minY = std::min(minY, lineMinY);
+      maxX = std::max(maxX, lineMaxX);
+      maxY = std::max(maxY, lineMaxY);
     }
 
     // If no elements found, use page dimensions with origin at (0,0)
@@ -2293,9 +2321,17 @@ OCRAnalysis::renderElementsToPNG(const PDFElements &elements,
     cairo_paint(cr);
 
     // Draw rectangles (PDF bottom-left origin -> convert to top-left)
+    // Only render rectangles within the crop box
     cairo_set_source_rgb(cr, 0.8, 0.8, 0.8);
     cairo_set_line_width(cr, 1.0 / scale);
     for (const auto &rect : elements.rectangles) {
+      // Check if rectangle is within page bounds (crop box)
+      if (rect.x < 0 || rect.y < 0 ||
+          rect.x + rect.width > elements.pageWidth ||
+          rect.y + rect.height > elements.pageHeight) {
+        continue; // Skip elements outside crop box
+      }
+
       double x = rect.x - minX + margin;
       // Convert from PDF bottom-left to Cairo top-left
       double y = pageHeightPt - (rect.y - minY + rect.height) - margin;
@@ -2313,9 +2349,20 @@ OCRAnalysis::renderElementsToPNG(const PDFElements &elements,
     }
 
     // Draw lines (PDF bottom-left origin -> convert to top-left)
+    // Only render lines within the crop box
     cairo_set_source_rgb(cr, 0.0, 0.0, 0.0);
     cairo_set_line_width(cr, 0.5 / scale);
     for (const auto &line : elements.graphicLines) {
+      // Check if line is within page bounds (crop box)
+      double lineMinX = std::min(line.x1, line.x2);
+      double lineMaxX = std::max(line.x1, line.x2);
+      double lineMinY = std::min(line.y1, line.y2);
+      double lineMaxY = std::max(line.y1, line.y2);
+      if (lineMinX < 0 || lineMinY < 0 || lineMaxX > elements.pageWidth ||
+          lineMaxY > elements.pageHeight) {
+        continue; // Skip elements outside crop box
+      }
+
       double x1 = line.x1 - minX + margin;
       double x2 = line.x2 - minX + margin;
       // Convert from PDF bottom-left to Cairo top-left
@@ -2336,7 +2383,15 @@ OCRAnalysis::renderElementsToPNG(const PDFElements &elements,
     }
 
     // Draw images (PDF bottom-left origin -> convert to top-left)
+    // Only render images within the crop box
     for (const auto &img : elements.images) {
+      // Check if image is within page bounds (crop box)
+      if (img.x < 0 || img.y < 0 ||
+          img.x + img.displayWidth > elements.pageWidth ||
+          img.y + img.displayHeight > elements.pageHeight) {
+        continue; // Skip elements outside crop box
+      }
+
       double x = img.x - minX + margin;
       // Convert from PDF bottom-left to Cairo top-left
       double y = pageHeightPt - (img.y - minY + img.displayHeight) - margin;
@@ -2401,12 +2456,20 @@ OCRAnalysis::renderElementsToPNG(const PDFElements &elements,
     }
 
     // Draw text (PDF bottom-left origin -> convert to top-left)
+    // Only render text within the crop box
     cairo_set_source_rgb(cr, 0.0, 0.0, 0.0);
     cairo_select_font_face(cr, "Sans", CAIRO_FONT_SLANT_NORMAL,
                            CAIRO_FONT_WEIGHT_NORMAL);
     cairo_set_font_size(cr, 10.0);
 
     for (const auto &text : elements.textLines) {
+      // Check if text is within page bounds (crop box)
+      if (text.boundingBox.x < 0 || text.boundingBox.y < 0 ||
+          text.boundingBox.x + text.boundingBox.width > elements.pageWidth ||
+          text.boundingBox.y + text.boundingBox.height > elements.pageHeight) {
+        continue; // Skip elements outside crop box
+      }
+
       double x = text.boundingBox.x - minX + margin;
       // Convert from PDF bottom-left to Cairo top-left
       double y = pageHeightPt - (text.boundingBox.y - minY) - margin +
