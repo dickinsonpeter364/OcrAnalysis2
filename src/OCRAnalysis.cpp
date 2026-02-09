@@ -2298,9 +2298,10 @@ OCRAnalysis::renderElementsToPNG(const PDFElements &elements,
     }
 
     // Calculate dimensions in points and pixels
-    const double margin = 10.0;
-    double pageWidthPt = maxX - minX + 2 * margin;
-    double pageHeightPt = maxY - minY + 2 * margin;
+    // No margin - elements positioned relative to content area top-left
+    const double margin = 0.0;
+    double pageWidthPt = maxX - minX;
+    double pageHeightPt = maxY - minY;
 
     // Convert to pixels based on DPI (72 points = 1 inch)
     double scale = dpi / 72.0;
