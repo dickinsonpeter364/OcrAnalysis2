@@ -2348,19 +2348,33 @@ OCRAnalysis::renderElementsToPNG(const PDFElements &elements,
       }
     }
 
-    // Use crop box bounds for positioning (elements relative to crop box)
-    // Crop box rendered from (0,0) with its full dimensions
-    minX = cropBoxMinX;
-    minY = cropBoxMinY;
+    // Use element bounds as the actual crop box
+    // The linesBoundingBox represents the crop mark lines' bounding box,
+    // but the actual content area is defined by where elements are positioned
+    if (renderMinX != std::numeric_limits<double>::max()) {
+      minX = renderMinX;
+      minY = renderMinY;
+      maxX = renderMaxX;
+      maxY = renderMaxY;
 
-    std::cerr << "DEBUG: Using crop box for positioning and dimensions: ("
-              << minX << ", " << minY << ") to (" << cropBoxMaxX << ", "
-              << cropBoxMaxY << ")" << std::endl;
+      std::cerr << "DEBUG: Using element bounds as crop box (content area): ("
+                << minX << ", " << minY << ") to (" << maxX << ", " << maxY
+                << ")" << std::endl;
+      std::cerr << "DEBUG: linesBoundingBox was: (" << cropBoxMinX << ", "
+                << cropBoxMinY << ") to (" << cropBoxMaxX << ", " << cropBoxMaxY
+                << ")" << std::endl;
+    } else {
+      // Fallback to crop box if no elements found
+      minX = cropBoxMinX;
+      minY = cropBoxMinY;
+      maxX = cropBoxMaxX;
+      maxY = cropBoxMaxY;
+    }
 
-    // Use crop box dimensions for image size
+    // Use element bounds for image size
     const double margin = 0.0;
-    double pageWidthPt = cropBoxMaxX - cropBoxMinX;
-    double pageHeightPt = cropBoxMaxY - cropBoxMinY;
+    double pageWidthPt = maxX - minX;
+    double pageHeightPt = maxY - minY;
 
     // Convert to pixels based on DPI (72 points = 1 inch)
     double scale = dpi / 72.0;
