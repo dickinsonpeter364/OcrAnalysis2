@@ -1438,10 +1438,12 @@ OCRAnalysis::extractPDFElements(const std::string &pdfPath, double minRectSize,
         std::unique_ptr<poppler::page> page(doc->create_page(0));
         if (page) {
           poppler::rectf pageRect = page->page_rect();
+          result.pageX = pageRect.x();
           result.pageWidth = pageRect.width();
+          result.pageY = pageRect.y();
           result.pageHeight = pageRect.height();
-          std::cerr << "DEBUG: Page dimensions: " << result.pageWidth << " x "
-                    << result.pageHeight << " points" << std::endl;
+          std::cerr << "DEBUG: Page crop box: origin(" << pageRect.x() << ", " << pageRect.y()
+                    << ") size(" << result.pageWidth << " x " << result.pageHeight << ") points" << std::endl;
         }
       }
     } catch (const std::exception &e) {
@@ -2196,9 +2198,9 @@ OCRAnalysis::renderElementsToPNG(const PDFElements &elements,
     // Check all elements to find actual bounds (only those within crop box)
     for (const auto &text : elements.textLines) {
       // Skip elements outside crop box
-      if (text.boundingBox.x < 0 || text.boundingBox.y < 0 ||
-          text.boundingBox.x + text.boundingBox.width > elements.pageWidth ||
-          text.boundingBox.y + text.boundingBox.height > elements.pageHeight) {
+      if (text.boundingBox.x < elements.pageX || text.boundingBox.y < elements.pageY ||
+          text.boundingBox.x + text.boundingBox.width > elements.pageX + elements.pageWidth ||
+          text.boundingBox.y + text.boundingBox.height > elements.pageY + elements.pageHeight) {
         continue;
       }
       minX = std::min(minX, static_cast<double>(text.boundingBox.x));
@@ -2211,9 +2213,9 @@ OCRAnalysis::renderElementsToPNG(const PDFElements &elements,
 
     for (const auto &img : elements.images) {
       // Skip elements outside crop box
-      if (img.x < 0 || img.y < 0 ||
-          img.x + img.displayWidth > elements.pageWidth ||
-          img.y + img.displayHeight > elements.pageHeight) {
+      if (img.x < elements.pageX || img.y < elements.pageY ||
+          img.x + img.displayWidth > elements.pageX + elements.pageWidth ||
+          img.y + img.displayHeight > elements.pageY + elements.pageHeight) {
         continue;
       }
       minX = std::min(minX, img.x);
@@ -2224,9 +2226,9 @@ OCRAnalysis::renderElementsToPNG(const PDFElements &elements,
 
     for (const auto &rect : elements.rectangles) {
       // Skip elements outside crop box
-      if (rect.x < 0 || rect.y < 0 ||
-          rect.x + rect.width > elements.pageWidth ||
-          rect.y + rect.height > elements.pageHeight) {
+      if (rect.x < elements.pageX || rect.y < elements.pageY ||
+          rect.x + rect.width > elements.pageX + elements.pageWidth ||
+          rect.y + rect.height > elements.pageY + elements.pageHeight) {
         continue;
       }
       minX = std::min(minX, rect.x);
@@ -2326,9 +2328,9 @@ OCRAnalysis::renderElementsToPNG(const PDFElements &elements,
     cairo_set_line_width(cr, 1.0 / scale);
     for (const auto &rect : elements.rectangles) {
       // Check if rectangle is within page bounds (crop box)
-      if (rect.x < 0 || rect.y < 0 ||
-          rect.x + rect.width > elements.pageWidth ||
-          rect.y + rect.height > elements.pageHeight) {
+      if (rect.x < elements.pageX || rect.y < elements.pageY ||
+          rect.x + rect.width > elements.pageX + elements.pageWidth ||
+          rect.y + rect.height > elements.pageY + elements.pageHeight) {
         continue; // Skip elements outside crop box
       }
 
@@ -2386,9 +2388,9 @@ OCRAnalysis::renderElementsToPNG(const PDFElements &elements,
     // Only render images within the crop box
     for (const auto &img : elements.images) {
       // Check if image is within page bounds (crop box)
-      if (img.x < 0 || img.y < 0 ||
-          img.x + img.displayWidth > elements.pageWidth ||
-          img.y + img.displayHeight > elements.pageHeight) {
+      if (img.x < elements.pageX || img.y < elements.pageY ||
+          img.x + img.displayWidth > elements.pageX + elements.pageWidth ||
+          img.y + img.displayHeight > elements.pageY + elements.pageHeight) {
         continue; // Skip elements outside crop box
       }
 
@@ -2464,9 +2466,9 @@ OCRAnalysis::renderElementsToPNG(const PDFElements &elements,
 
     for (const auto &text : elements.textLines) {
       // Check if text is within page bounds (crop box)
-      if (text.boundingBox.x < 0 || text.boundingBox.y < 0 ||
-          text.boundingBox.x + text.boundingBox.width > elements.pageWidth ||
-          text.boundingBox.y + text.boundingBox.height > elements.pageHeight) {
+      if (text.boundingBox.x < elements.pageX || text.boundingBox.y < elements.pageY ||
+          text.boundingBox.x + text.boundingBox.width > elements.pageX + elements.pageWidth ||
+          text.boundingBox.y + text.boundingBox.height > elements.pageY + elements.pageHeight) {
         continue; // Skip elements outside crop box
       }
 
