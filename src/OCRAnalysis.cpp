@@ -1390,6 +1390,13 @@ OCRAnalysis::extractPDFElements(const std::string &pdfPath, double minRectSize,
               continue;
             }
 
+            // Skip small rectangles (potential crop marks)
+            const double cropMarkMaxSize = 30.0;
+            if (rect.width <= cropMarkMaxSize &&
+                rect.height <= cropMarkMaxSize) {
+              continue;
+            }
+
             // Calculate rectangle edges
             double rectLeft = rect.x;
             double rectRight = rect.x + rect.width;
@@ -1442,64 +1449,51 @@ OCRAnalysis::extractPDFElements(const std::string &pdfPath, double minRectSize,
         result.graphicLines = std::move(filteredLines);
         result.graphicLineCount = static_cast<int>(result.graphicLines.size());
 
-        // Detect crop marks and calculate interior box from intersection points
-        // Crop marks are pairs of perpendicular lines at the corners
+        // Detect crop marks from small rectangles
+        // Crop marks are often drawn as small rectangular boxes at the corners
         std::vector<std::pair<double, double>> cropMarkCorners;
 
-        // Find potential crop mark lines (short lines near page edges)
-        std::vector<PDFLine> horizontalCropLines;
-        std::vector<PDFLine> verticalCropLines;
+        const double cropMarkMaxSize = 30.0; // Crop marks are small
+        const double cropMarkMinSize = 10.0;
+        const double edgeProximity = 50.0; // Crop marks are near page edges
 
-        const double cropMarkMaxLength = 30.0; // Crop marks are typically short
-        const double cropMarkMinLength = 10.0;
+        // Use line bounding box as page bounds
+        double pageMinX = lineResult.boundingBoxX;
+        double pageMinY = lineResult.boundingBoxY;
+        double pageMaxX = lineResult.boundingBoxX + lineResult.boundingBoxWidth;
+        double pageMaxY =
+            lineResult.boundingBoxY + lineResult.boundingBoxHeight;
 
-        for (const auto &line : lineResult.lines) {
-          double length = std::sqrt(std::pow(line.x2 - line.x1, 2) +
-                                    std::pow(line.y2 - line.y1, 2));
+        std::cerr << "DEBUG: Page bounds: (" << pageMinX << ", " << pageMinY
+                  << ") to (" << pageMaxX << ", " << pageMaxY << ")"
+                  << std::endl;
 
-          if (length >= cropMarkMinLength && length <= cropMarkMaxLength) {
-            if (line.isHorizontal) {
-              horizontalCropLines.push_back(line);
-            } else if (line.isVertical) {
-              verticalCropLines.push_back(line);
+        for (const auto &rect : result.rectangles) {
+          // Check if this is a small rectangle (potential crop mark)
+          if (rect.width >= cropMarkMinSize && rect.width <= cropMarkMaxSize &&
+              rect.height >= cropMarkMinSize &&
+              rect.height <= cropMarkMaxSize) {
+            // Use the center of the rectangle as the crop mark position
+            double centerX = rect.x + rect.width / 2.0;
+            double centerY = rect.y + rect.height / 2.0;
+
+            // Check if near a page edge
+            bool nearLeftEdge = (centerX - pageMinX) < edgeProximity;
+            bool nearRightEdge = (pageMaxX - centerX) < edgeProximity;
+            bool nearBottomEdge = (centerY - pageMinY) < edgeProximity;
+            bool nearTopEdge = (pageMaxY - centerY) < edgeProximity;
+
+            bool nearEdge = (nearLeftEdge || nearRightEdge) &&
+                            (nearBottomEdge || nearTopEdge);
+
+            if (nearEdge) {
+              cropMarkCorners.push_back({centerX, centerY});
             }
           }
         }
 
-        std::cerr << "DEBUG: Found " << horizontalCropLines.size()
-                  << " potential horizontal crop mark lines, "
-                  << verticalCropLines.size() << " vertical" << std::endl;
-
-        // Find intersection points of perpendicular crop mark lines
-        const double intersectionTolerance =
-            5.0; // Points must be within this distance
-
-        for (const auto &hLine : horizontalCropLines) {
-          double hY = (hLine.y1 + hLine.y2) / 2.0;
-
-          for (const auto &vLine : verticalCropLines) {
-            double vX = (vLine.x1 + vLine.x2) / 2.0;
-
-            // Check if lines are close enough to form a crop mark
-            double hMinX = std::min(hLine.x1, hLine.x2);
-            double hMaxX = std::max(hLine.x1, hLine.x2);
-            double vMinY = std::min(vLine.y1, vLine.y2);
-            double vMaxY = std::max(vLine.y1, vLine.y2);
-
-            // Check if the lines could intersect (extended)
-            bool hLineNearVLine = (vX >= hMinX - intersectionTolerance &&
-                                   vX <= hMaxX + intersectionTolerance);
-            bool vLineNearHLine = (hY >= vMinY - intersectionTolerance &&
-                                   hY <= vMaxY + intersectionTolerance);
-
-            if (hLineNearVLine && vLineNearHLine) {
-              // This is a potential crop mark corner
-              cropMarkCorners.push_back({vX, hY});
-              // std::cerr << "DEBUG: Found crop mark corner at (" << vX << ", "
-              //           << hY << ")" << std::endl;
-            }
-          }
-        }
+        std::cerr << "DEBUG: Found " << cropMarkCorners.size()
+                  << " potential crop mark rectangles" << std::endl;
 
         // Calculate interior box from crop mark corners
         if (cropMarkCorners.size() >= 4) {
