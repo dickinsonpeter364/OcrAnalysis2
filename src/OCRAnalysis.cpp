@@ -2356,7 +2356,8 @@ OCRAnalysis::renderElementsToPNG(const PDFElements &elements,
     cairo_set_source_rgb(cr, 0.8, 0.8, 0.8);
     cairo_set_line_width(cr, 1.0 / scale);
     for (const auto &rect : elements.rectangles) {
-      // Check if rectangle is within content bounding box
+      // Check if rectangle is within content bounding box (strict - no
+      // tolerance)
       if (rect.x < minX || rect.y < minY || rect.x + rect.width > maxX ||
           rect.y + rect.height > maxY) {
         continue; // Skip elements outside content area
@@ -2383,7 +2384,7 @@ OCRAnalysis::renderElementsToPNG(const PDFElements &elements,
     cairo_set_source_rgb(cr, 0.0, 0.0, 0.0);
     cairo_set_line_width(cr, 0.5 / scale);
     for (const auto &line : elements.graphicLines) {
-      // Check if line is within content bounding box
+      // Check if line is within content bounding box (strict - no tolerance)
       double lineMinX = std::min(line.x1, line.x2);
       double lineMaxX = std::max(line.x1, line.x2);
       double lineMinY = std::min(line.y1, line.y2);
@@ -2493,10 +2494,11 @@ OCRAnalysis::renderElementsToPNG(const PDFElements &elements,
     cairo_set_font_size(cr, 10.0);
 
     for (const auto &text : elements.textLines) {
-      // Check if text is within content bounding box
-      if (text.boundingBox.x < minX || text.boundingBox.y < minY ||
-          text.boundingBox.x + text.boundingBox.width > maxX ||
-          text.boundingBox.y + text.boundingBox.height > maxY) {
+      // Check if text is within content bounding box (with tolerance)
+      if (text.boundingBox.x < minX - tolerance ||
+          text.boundingBox.y < minY - tolerance ||
+          text.boundingBox.x + text.boundingBox.width > maxX + tolerance ||
+          text.boundingBox.y + text.boundingBox.height > maxY + tolerance) {
         continue; // Skip elements outside content area
       }
 
