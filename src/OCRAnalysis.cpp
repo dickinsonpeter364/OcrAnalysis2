@@ -2298,7 +2298,13 @@ OCRAnalysis::renderElementsToPNG(const PDFElements &elements,
     }
 
     // Calculate dimensions in points and pixels
-    // First, find the actual bounds of elements that will be rendered
+    // Save the crop box dimensions (for image size)
+    double cropBoxMinX = minX;
+    double cropBoxMinY = minY;
+    double cropBoxMaxX = maxX;
+    double cropBoxMaxY = maxY;
+
+    // Find the actual bounds of elements that will be rendered
     // (within the crop box, but elements may not start at crop box edge)
     double renderMinX = std::numeric_limits<double>::max();
     double renderMinY = std::numeric_limits<double>::max();
@@ -2315,8 +2321,9 @@ OCRAnalysis::renderElementsToPNG(const PDFElements &elements,
 
       // Include if element overlaps with crop box (not strict containment)
       // Also account for baseline offset extending below bounding box
-      if (textRight > minX && textLeft < maxX && textBottom > minY &&
-          textTop - textBaselineOffset < maxY) {
+      if (textRight > cropBoxMinX && textLeft < cropBoxMaxX &&
+          textBottom > cropBoxMinY &&
+          textTop - textBaselineOffset < cropBoxMaxY) {
         renderMinX = std::min(renderMinX, textLeft);
         renderMinY = std::min(renderMinY, textTop - textBaselineOffset);
         renderMaxX = std::max(renderMaxX, textRight);
@@ -2332,8 +2339,8 @@ OCRAnalysis::renderElementsToPNG(const PDFElements &elements,
       double imgBottom = img.y + img.displayHeight;
 
       // Include if element overlaps with crop box
-      if (imgRight > minX && imgLeft < maxX && imgBottom > minY &&
-          imgTop < maxY) {
+      if (imgRight > cropBoxMinX && imgLeft < cropBoxMaxX &&
+          imgBottom > cropBoxMinY && imgTop < cropBoxMaxY) {
         renderMinX = std::min(renderMinX, imgLeft);
         renderMinY = std::min(renderMinY, imgTop);
         renderMaxX = std::max(renderMaxX, imgRight);
@@ -2341,22 +2348,21 @@ OCRAnalysis::renderElementsToPNG(const PDFElements &elements,
       }
     }
 
-    // Use actual element bounds for rendering origin
-    // This ensures elements start at (0,0) in the output
+    // Use element bounds for rendering offset (to position at 0,0)
+    // But keep crop box dimensions for image size
     if (renderMinX != std::numeric_limits<double>::max()) {
       minX = renderMinX;
       minY = renderMinY;
-      maxX = renderMaxX;
-      maxY = renderMaxY;
 
-      std::cerr << "DEBUG: Rendering from actual element bounds: (" << minX
-                << ", " << minY << ") to (" << maxX << ", " << maxY << ")"
+      std::cerr << "DEBUG: Element bounds for positioning: (" << minX << ", "
+                << minY << ") to (" << renderMaxX << ", " << renderMaxY << ")"
                 << std::endl;
     }
 
+    // Use crop box dimensions for image size
     const double margin = 0.0;
-    double pageWidthPt = maxX - minX;
-    double pageHeightPt = maxY - minY;
+    double pageWidthPt = cropBoxMaxX - cropBoxMinX;
+    double pageHeightPt = cropBoxMaxY - cropBoxMinY;
 
     // Convert to pixels based on DPI (72 points = 1 inch)
     double scale = dpi / 72.0;
