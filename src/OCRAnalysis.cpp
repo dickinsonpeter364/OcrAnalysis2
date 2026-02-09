@@ -712,14 +712,45 @@ public:
 
     // Get transformation matrix for position info
     const auto &ctm = state->getCTM(); // Returns std::array<double, 6>
-    double x = ctm[4];                 // Translation X
-    double y = ctm[5];                 // Translation Y
+
+    // CTM format: [a, b, c, d, e, f] represents transformation matrix:
+    // [a b]   [x]   [e]
+    // [c d] * [y] + [f]
+    //
+    // The CTM maps the unit square (0,0)-(1,1) to the image rectangle
+    // For rotated images, we need to calculate the axis-aligned bounding box
 
     // Calculate display dimensions from CTM
-    // CTM contains the transformation matrix in points
-    // The magnitude of the transformation vectors gives us the display size
     double displayWidth = std::sqrt(ctm[0] * ctm[0] + ctm[1] * ctm[1]);
     double displayHeight = std::sqrt(ctm[2] * ctm[2] + ctm[3] * ctm[3]);
+
+    // Calculate all four corners of the transformed image
+    // (0,0) -> (e, f)
+    // (1,0) -> (e+a, f+b)
+    // (0,1) -> (e+c, f+d)
+    // (1,1) -> (e+a+c, f+b+d)
+    double x0 = ctm[4];
+    double y0 = ctm[5];
+    double x1 = ctm[4] + ctm[0];
+    double y1 = ctm[5] + ctm[1];
+    double x2 = ctm[4] + ctm[2];
+    double y2 = ctm[5] + ctm[3];
+    double x3 = ctm[4] + ctm[0] + ctm[2];
+    double y3 = ctm[5] + ctm[1] + ctm[3];
+
+    // Find the axis-aligned bounding box (actual rendered position)
+    double x = std::min({x0, x1, x2, x3});
+    double y = std::min({y0, y1, y2, y3});
+
+    std::cerr << "DEBUG: Image CTM: [" << ctm[0] << ", " << ctm[1] << ", "
+              << ctm[2] << ", " << ctm[3] << ", " << ctm[4] << ", " << ctm[5]
+              << "]" << std::endl;
+    std::cerr << "DEBUG: Image corners: (" << x0 << "," << y0 << "), (" << x1
+              << "," << y1 << "), (" << x2 << "," << y2 << "), (" << x3 << ","
+              << y3 << ")" << std::endl;
+    std::cerr << "DEBUG: Image AABB position: (" << x << ", " << y
+              << "), display size: " << displayWidth << " x " << displayHeight
+              << std::endl;
 
     // Determine image type and channels
     int nComps = colorMap->getNumPixelComps();
