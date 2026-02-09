@@ -2349,18 +2349,21 @@ OCRAnalysis::renderElementsToPNG(const PDFElements &elements,
     }
 
     // Use element bounds for rendering offset (to position at 0,0)
-    // But keep crop box dimensions for image size
+    // But calculate dimensions to match crop box height
     if (renderMinX != std::numeric_limits<double>::max()) {
-      minX = renderMinX; // Adjust X to remove left margin
-      // Keep minY from crop box to preserve full height
-
-      std::cerr << "DEBUG: Element bounds for X positioning: minX=" << minX
-                << ", crop box minY=" << cropBoxMinY << std::endl;
+      minX = renderMinX;  // Adjust X to remove left margin
+      minY = renderMinY;  // Adjust Y to remove top margin
+      
+      std::cerr << "DEBUG: Element bounds for positioning: ("
+                << minX << ", " << minY << ")" << std::endl;
+      std::cerr << "DEBUG: Crop box: (" << cropBoxMinX << ", " << cropBoxMinY 
+                << ") to (" << cropBoxMaxX << ", " << cropBoxMaxY << ")" << std::endl;
     }
-
-    // Use crop box dimensions for image size
+    
+    // Calculate dimensions: use crop box width, but height from crop box top to element bottom
     const double margin = 0.0;
     double pageWidthPt = cropBoxMaxX - cropBoxMinX;
+    // Height: from crop box minY to crop box maxY (full crop box height)
     double pageHeightPt = cropBoxMaxY - cropBoxMinY;
 
     // Convert to pixels based on DPI (72 points = 1 inch)
