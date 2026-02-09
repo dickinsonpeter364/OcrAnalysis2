@@ -2278,10 +2278,6 @@ OCRAnalysis::renderElementsToPNG(const PDFElements &elements,
                 << std::endl;
     }
 
-    // Add small tolerance to account for rounding errors and crop mark
-    // imprecision
-    const double tolerance = 2.0; // points
-
     // If no elements found, use page dimensions with origin at (0,0)
     if (minX == std::numeric_limits<double>::max()) {
       minX = 0;
@@ -2356,17 +2352,27 @@ OCRAnalysis::renderElementsToPNG(const PDFElements &elements,
     cairo_set_source_rgb(cr, 0.8, 0.8, 0.8);
     cairo_set_line_width(cr, 1.0 / scale);
     for (const auto &rect : elements.rectangles) {
-      // Check if rectangle is within content bounding box (strict - no
-      // tolerance)
-      if (rect.x < minX || rect.y < minY || rect.x + rect.width > maxX ||
-          rect.y + rect.height > maxY) {
-        continue; // Skip elements outside content area
+      // Clip rectangle to content bounding box
+      double rectLeft = std::max(rect.x, minX);
+      double rectTop = std::max(rect.y, minY);
+      double rectRight = std::min(rect.x + rect.width, maxX);
+      double rectBottom = std::min(rect.y + rect.height, maxY);
+
+      // Skip if rectangle is completely outside content area
+      if (rectLeft >= rectRight || rectTop >= rectBottom) {
+        continue;
       }
 
-      double x = rect.x - minX + margin;
+      // Use clipped dimensions for rendering
+      double clippedX = rectLeft;
+      double clippedY = rectTop;
+      double clippedWidth = rectRight - rectLeft;
+      double clippedHeight = rectBottom - rectTop;
+
+      double x = clippedX - minX + margin;
       // Convert from PDF bottom-left to Cairo top-left
-      double y = pageHeightPt - (rect.y - minY + rect.height) - margin;
-      cairo_rectangle(cr, x, y, rect.width, rect.height);
+      double y = pageHeightPt - (clippedY - minY + clippedHeight) - margin;
+      cairo_rectangle(cr, x, y, clippedWidth, clippedHeight);
       cairo_stroke(cr);
 
       // Add to result
@@ -2374,8 +2380,8 @@ OCRAnalysis::renderElementsToPNG(const PDFElements &elements,
       elem.type = RenderedElement::RECTANGLE;
       elem.pixelX = static_cast<int>(x * scale);
       elem.pixelY = static_cast<int>(y * scale);
-      elem.pixelWidth = static_cast<int>(rect.width * scale);
-      elem.pixelHeight = static_cast<int>(rect.height * scale);
+      elem.pixelWidth = static_cast<int>(clippedWidth * scale);
+      elem.pixelHeight = static_cast<int>(clippedHeight * scale);
       result.elements.push_back(elem);
     }
 
@@ -2384,21 +2390,31 @@ OCRAnalysis::renderElementsToPNG(const PDFElements &elements,
     cairo_set_source_rgb(cr, 0.0, 0.0, 0.0);
     cairo_set_line_width(cr, 0.5 / scale);
     for (const auto &line : elements.graphicLines) {
-      // Check if line is within content bounding box (strict - no tolerance)
-      double lineMinX = std::min(line.x1, line.x2);
-      double lineMaxX = std::max(line.x1, line.x2);
-      double lineMinY = std::min(line.y1, line.y2);
-      double lineMaxY = std::max(line.y1, line.y2);
-      if (lineMinX < minX || lineMinY < minY || lineMaxX > maxX ||
-          lineMaxY > maxY) {
-        continue; // Skip elements outside content area
+      // Clip line to content bounding box
+      double lx1 = line.x1;
+      double ly1 = line.y1;
+      double lx2 = line.x2;
+      double ly2 = line.y2;
+
+      // Simple clipping: clip each endpoint to the bounding box
+      lx1 = std::max(minX, std::min(maxX, lx1));
+      ly1 = std::max(minY, std::min(maxY, ly1));
+      lx2 = std::max(minX, std::min(maxX, lx2));
+      ly2 = std::max(minY, std::min(maxY, ly2));
+
+      // Skip if line is completely outside or collapsed to a point
+      if ((lx1 == lx2 && ly1 == ly2) || (line.x1 < minX && line.x2 < minX) ||
+          (line.x1 > maxX && line.x2 > maxX) ||
+          (line.y1 < minY && line.y2 < minY) ||
+          (line.y1 > maxY && line.y2 > maxY)) {
+        continue;
       }
 
-      double x1 = line.x1 - minX + margin;
-      double x2 = line.x2 - minX + margin;
+      double x1 = lx1 - minX + margin;
+      double x2 = lx2 - minX + margin;
       // Convert from PDF bottom-left to Cairo top-left
-      double y1 = pageHeightPt - (line.y1 - minY) - margin;
-      double y2 = pageHeightPt - (line.y2 - minY) - margin;
+      double y1 = pageHeightPt - (ly1 - minY) - margin;
+      double y2 = pageHeightPt - (ly2 - minY) - margin;
       cairo_move_to(cr, x1, y1);
       cairo_line_to(cr, x2, y2);
       cairo_stroke(cr);
@@ -2416,12 +2432,22 @@ OCRAnalysis::renderElementsToPNG(const PDFElements &elements,
     // Draw images (PDF bottom-left origin -> convert to top-left)
     // Only render images within the crop box
     for (const auto &img : elements.images) {
-      // Check if image is within content bounding box (with tolerance)
-      if (img.x < minX - tolerance || img.y < minY - tolerance ||
-          img.x + img.displayWidth > maxX + tolerance ||
-          img.y + img.displayHeight > maxY + tolerance) {
-        continue; // Skip elements outside content area
+      // Clip image to content bounding box
+      double imgLeft = std::max(img.x, minX);
+      double imgTop = std::max(img.y, minY);
+      double imgRight = std::min(img.x + img.displayWidth, maxX);
+      double imgBottom = std::min(img.y + img.displayHeight, maxY);
+
+      // Skip if image is completely outside content area
+      if (imgLeft >= imgRight || imgTop >= imgBottom) {
+        continue;
       }
+
+      // Calculate clipped dimensions
+      double clippedWidth = imgRight - imgLeft;
+      double clippedHeight = imgBottom - imgTop;
+      double offsetX = imgLeft - img.x; // How much we clipped from left
+      double offsetY = imgTop - img.y;  // How much we clipped from top
 
       double x = img.x - minX + margin;
       // Convert from PDF bottom-left to Cairo top-left
@@ -2494,12 +2520,19 @@ OCRAnalysis::renderElementsToPNG(const PDFElements &elements,
     cairo_set_font_size(cr, 10.0);
 
     for (const auto &text : elements.textLines) {
-      // Check if text is within content bounding box (with tolerance)
-      if (text.boundingBox.x < minX - tolerance ||
-          text.boundingBox.y < minY - tolerance ||
-          text.boundingBox.x + text.boundingBox.width > maxX + tolerance ||
-          text.boundingBox.y + text.boundingBox.height > maxY + tolerance) {
-        continue; // Skip elements outside content area
+      // Clip text to content bounding box
+      double textLeft = std::max(static_cast<double>(text.boundingBox.x), minX);
+      double textTop = std::max(static_cast<double>(text.boundingBox.y), minY);
+      double textRight = std::min(
+          static_cast<double>(text.boundingBox.x + text.boundingBox.width),
+          maxX);
+      double textBottom = std::min(
+          static_cast<double>(text.boundingBox.y + text.boundingBox.height),
+          maxY);
+
+      // Skip if text is completely outside content area
+      if (textLeft >= textRight || textTop >= textBottom) {
+        continue;
       }
 
       double x = text.boundingBox.x - minX + margin;
