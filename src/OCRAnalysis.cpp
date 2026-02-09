@@ -2306,6 +2306,8 @@ OCRAnalysis::renderElementsToPNG(const PDFElements &elements,
     double actualMaxY = std::numeric_limits<double>::lowest();
 
     // Check text elements
+    const double textBaselineOffset =
+        10.0; // Must match the offset used in rendering
     for (const auto &text : elements.textLines) {
       double textLeft = std::max(static_cast<double>(text.boundingBox.x), minX);
       double textTop = std::max(static_cast<double>(text.boundingBox.y), minY);
@@ -2318,9 +2320,16 @@ OCRAnalysis::renderElementsToPNG(const PDFElements &elements,
 
       if (textLeft < textRight && textTop < textBottom) {
         actualMinX = std::min(actualMinX, textLeft);
-        actualMinY = std::min(actualMinY, textTop);
+        // Account for baseline offset when calculating minimum Y
+        // In PDF coords (bottom-left origin), lower Y values are at bottom
+        // The baseline offset extends the text downward (lower Y)
+        actualMinY = std::min(actualMinY, textTop - textBaselineOffset);
         actualMaxX = std::max(actualMaxX, textRight);
         actualMaxY = std::max(actualMaxY, textBottom);
+
+        std::cerr << "DEBUG: Text '" << text.text << "' bounds: (" << textLeft
+                  << ", " << textTop << ") to (" << textRight << ", "
+                  << textBottom << ")" << std::endl;
       }
     }
 
