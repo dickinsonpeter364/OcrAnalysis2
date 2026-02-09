@@ -2185,15 +2185,60 @@ OCRAnalysis::renderElementsToPNG(const PDFElements &elements,
   PNGRenderResult result;
 
   try {
-    // Use page dimensions as the rendering bounds (crop box)
-    // This ensures we only render the visible area of the page
-    double minX = 0;
-    double minY = 0;
-    double maxX = elements.pageWidth;
-    double maxY = elements.pageHeight;
+    // Find the actual bounding box of all elements to determine the offset
+    // This allows us to normalize coordinates so rendering starts at (0,0)
+    double minX = std::numeric_limits<double>::max();
+    double minY = std::numeric_limits<double>::max();
+    double maxX = std::numeric_limits<double>::lowest();
+    double maxY = std::numeric_limits<double>::lowest();
 
-    if (maxX == 0 || maxY == 0) {
-      result.errorMessage = "Invalid page dimensions";
+    // Check all elements to find actual bounds
+    for (const auto &text : elements.textLines) {
+      minX = std::min(minX, static_cast<double>(text.boundingBox.x));
+      minY = std::min(minY, static_cast<double>(text.boundingBox.y));
+      maxX = std::max(maxX, static_cast<double>(text.boundingBox.x +
+                                                text.boundingBox.width));
+      maxY = std::max(maxY, static_cast<double>(text.boundingBox.y +
+                                                text.boundingBox.height));
+    }
+
+    for (const auto &img : elements.images) {
+      minX = std::min(minX, img.x);
+      minY = std::min(minY, img.y);
+      maxX = std::max(maxX, img.x + img.displayWidth);
+      maxY = std::max(maxY, img.y + img.displayHeight);
+    }
+
+    for (const auto &rect : elements.rectangles) {
+      minX = std::min(minX, rect.x);
+      minY = std::min(minY, rect.y);
+      maxX = std::max(maxX, rect.x + rect.width);
+      maxY = std::max(maxY, rect.y + rect.height);
+    }
+
+    for (const auto &line : elements.graphicLines) {
+      minX = std::min(minX, std::min(line.x1, line.x2));
+      minY = std::min(minY, std::min(line.y1, line.y2));
+      maxX = std::max(maxX, std::max(line.x1, line.x2));
+      maxY = std::max(maxY, std::max(line.y1, line.y2));
+    }
+
+    // If no elements found, use page dimensions with origin at (0,0)
+    if (minX == std::numeric_limits<double>::max()) {
+      minX = 0;
+      minY = 0;
+      maxX = elements.pageWidth;
+      maxY = elements.pageHeight;
+    }
+
+    // Ensure we don't exceed page dimensions (crop to page bounds)
+    minX = std::max(0.0, minX);
+    minY = std::max(0.0, minY);
+    maxX = std::min(elements.pageWidth, maxX);
+    maxY = std::min(elements.pageHeight, maxY);
+
+    if (maxX <= minX || maxY <= minY) {
+      result.errorMessage = "Invalid bounding box dimensions";
       return result;
     }
 
