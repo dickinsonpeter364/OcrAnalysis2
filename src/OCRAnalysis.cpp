@@ -2352,7 +2352,8 @@ OCRAnalysis::renderElementsToPNG(const PDFElements &elements,
     cairo_set_source_rgb(cr, 0.8, 0.8, 0.8);
     cairo_set_line_width(cr, 1.0 / scale);
     for (const auto &rect : elements.rectangles) {
-      // Clip rectangle to content bounding box
+      // Only render rectangles that are mostly inside the content area
+      // This prevents crop mark rectangles from being rendered
       double rectLeft = std::max(rect.x, minX);
       double rectTop = std::max(rect.y, minY);
       double rectRight = std::min(rect.x + rect.width, maxX);
@@ -2360,6 +2361,16 @@ OCRAnalysis::renderElementsToPNG(const PDFElements &elements,
 
       // Skip if rectangle is completely outside content area
       if (rectLeft >= rectRight || rectTop >= rectBottom) {
+        continue;
+      }
+
+      // Calculate what percentage of the rectangle is inside the content area
+      double clippedArea = (rectRight - rectLeft) * (rectBottom - rectTop);
+      double totalArea = rect.width * rect.height;
+      double insideRatio = clippedArea / totalArea;
+
+      // Only render if more than 50% of the rectangle is inside
+      if (insideRatio <= 0.5) {
         continue;
       }
 
@@ -2390,31 +2401,38 @@ OCRAnalysis::renderElementsToPNG(const PDFElements &elements,
     cairo_set_source_rgb(cr, 0.0, 0.0, 0.0);
     cairo_set_line_width(cr, 0.5 / scale);
     for (const auto &line : elements.graphicLines) {
-      // Clip line to content bounding box
+      // Only render lines that are mostly inside the content area
+      // This prevents crop mark lines from being rendered
       double lx1 = line.x1;
       double ly1 = line.y1;
       double lx2 = line.x2;
       double ly2 = line.y2;
 
-      // Simple clipping: clip each endpoint to the bounding box
-      lx1 = std::max(minX, std::min(maxX, lx1));
-      ly1 = std::max(minY, std::min(maxY, ly1));
-      lx2 = std::max(minX, std::min(maxX, lx2));
-      ly2 = std::max(minY, std::min(maxY, ly2));
+      // Calculate original line length
+      double originalLength =
+          std::sqrt((lx2 - lx1) * (lx2 - lx1) + (ly2 - ly1) * (ly2 - ly1));
 
-      // Skip if line is completely outside or collapsed to a point
-      if ((lx1 == lx2 && ly1 == ly2) || (line.x1 < minX && line.x2 < minX) ||
-          (line.x1 > maxX && line.x2 > maxX) ||
-          (line.y1 < minY && line.y2 < minY) ||
-          (line.y1 > maxY && line.y2 > maxY)) {
+      // Clip each endpoint to the bounding box
+      double clx1 = std::max(minX, std::min(maxX, lx1));
+      double cly1 = std::max(minY, std::min(maxY, ly1));
+      double clx2 = std::max(minX, std::min(maxX, lx2));
+      double cly2 = std::max(minY, std::min(maxY, ly2));
+
+      // Calculate clipped line length
+      double clippedLength = std::sqrt((clx2 - clx1) * (clx2 - clx1) +
+                                       (cly2 - cly1) * (cly2 - cly1));
+
+      // Skip if line is completely outside or mostly outside
+      if (clippedLength == 0 ||
+          (originalLength > 0 && (clippedLength / originalLength) <= 0.5)) {
         continue;
       }
 
-      double x1 = lx1 - minX + margin;
-      double x2 = lx2 - minX + margin;
+      double x1 = clx1 - minX + margin;
+      double x2 = clx2 - minX + margin;
       // Convert from PDF bottom-left to Cairo top-left
-      double y1 = pageHeightPt - (ly1 - minY) - margin;
-      double y2 = pageHeightPt - (ly2 - minY) - margin;
+      double y1 = pageHeightPt - (cly1 - minY) - margin;
+      double y2 = pageHeightPt - (cly2 - minY) - margin;
       cairo_move_to(cr, x1, y1);
       cairo_line_to(cr, x2, y2);
       cairo_stroke(cr);
