@@ -1449,51 +1449,60 @@ OCRAnalysis::extractPDFElements(const std::string &pdfPath, double minRectSize,
         result.graphicLines = std::move(filteredLines);
         result.graphicLineCount = static_cast<int>(result.graphicLines.size());
 
-        // Detect crop marks from small rectangles
-        // Crop marks are often drawn as small rectangular boxes at the corners
+        // Detect crop marks from perpendicular line intersections
         std::vector<std::pair<double, double>> cropMarkCorners;
 
-        const double cropMarkMaxSize = 30.0; // Crop marks are small
-        const double cropMarkMinSize = 10.0;
-        const double edgeProximity = 50.0; // Crop marks are near page edges
+        // Find short horizontal and vertical lines
+        std::vector<PDFLine> horizontalCropLines;
+        std::vector<PDFLine> verticalCropLines;
 
-        // Use line bounding box as page bounds
-        double pageMinX = lineResult.boundingBoxX;
-        double pageMinY = lineResult.boundingBoxY;
-        double pageMaxX = lineResult.boundingBoxX + lineResult.boundingBoxWidth;
-        double pageMaxY =
-            lineResult.boundingBoxY + lineResult.boundingBoxHeight;
+        const double cropMarkMaxLength = 30.0;
+        const double cropMarkMinLength = 10.0;
 
-        std::cerr << "DEBUG: Page bounds: (" << pageMinX << ", " << pageMinY
-                  << ") to (" << pageMaxX << ", " << pageMaxY << ")"
-                  << std::endl;
+        for (const auto &line : lineResult.lines) {
+          double length = std::sqrt(std::pow(line.x2 - line.x1, 2) +
+                                    std::pow(line.y2 - line.y1, 2));
 
-        for (const auto &rect : result.rectangles) {
-          // Check if this is a small rectangle (potential crop mark)
-          if (rect.width >= cropMarkMinSize && rect.width <= cropMarkMaxSize &&
-              rect.height >= cropMarkMinSize &&
-              rect.height <= cropMarkMaxSize) {
-            // Use the center of the rectangle as the crop mark position
-            double centerX = rect.x + rect.width / 2.0;
-            double centerY = rect.y + rect.height / 2.0;
+          if (length >= cropMarkMinLength && length <= cropMarkMaxLength) {
+            if (line.isHorizontal) {
+              horizontalCropLines.push_back(line);
+            } else if (line.isVertical) {
+              verticalCropLines.push_back(line);
+            }
+          }
+        }
 
-            // Check if near a page edge
-            bool nearLeftEdge = (centerX - pageMinX) < edgeProximity;
-            bool nearRightEdge = (pageMaxX - centerX) < edgeProximity;
-            bool nearBottomEdge = (centerY - pageMinY) < edgeProximity;
-            bool nearTopEdge = (pageMaxY - centerY) < edgeProximity;
+        std::cerr << "DEBUG: Found " << horizontalCropLines.size()
+                  << " horizontal crop mark lines, " << verticalCropLines.size()
+                  << " vertical" << std::endl;
 
-            bool nearEdge = (nearLeftEdge || nearRightEdge) &&
-                            (nearBottomEdge || nearTopEdge);
+        // Find intersection points
+        const double intersectionTolerance = 5.0;
 
-            if (nearEdge) {
-              cropMarkCorners.push_back({centerX, centerY});
+        for (const auto &hLine : horizontalCropLines) {
+          double hY = (hLine.y1 + hLine.y2) / 2.0;
+
+          for (const auto &vLine : verticalCropLines) {
+            double vX = (vLine.x1 + vLine.x2) / 2.0;
+
+            double hMinX = std::min(hLine.x1, hLine.x2);
+            double hMaxX = std::max(hLine.x1, hLine.x2);
+            double vMinY = std::min(vLine.y1, vLine.y2);
+            double vMaxY = std::max(vLine.y1, vLine.y2);
+
+            bool hLineNearVLine = (vX >= hMinX - intersectionTolerance &&
+                                   vX <= hMaxX + intersectionTolerance);
+            bool vLineNearHLine = (hY >= vMinY - intersectionTolerance &&
+                                   hY <= vMaxY + intersectionTolerance);
+
+            if (hLineNearVLine && vLineNearHLine) {
+              cropMarkCorners.push_back({vX, hY});
             }
           }
         }
 
         std::cerr << "DEBUG: Found " << cropMarkCorners.size()
-                  << " potential crop mark rectangles" << std::endl;
+                  << " crop mark intersection points" << std::endl;
 
         // Calculate interior box from crop mark corners
         if (cropMarkCorners.size() >= 4) {
@@ -1526,74 +1535,96 @@ OCRAnalysis::extractPDFElements(const std::string &pdfPath, double minRectSize,
                     << " corners to " << uniqueCorners.size()
                     << " unique corners" << std::endl;
 
-          // Find the 4 actual crop mark corners (at page corners)
-          // First get rough extremes
-          double roughMinX = std::numeric_limits<double>::max();
-          double roughMinY = std::numeric_limits<double>::max();
-          double roughMaxX = std::numeric_limits<double>::lowest();
-          double roughMaxY = std::numeric_limits<double>::lowest();
+          // Find the 4 crop mark corners by grouping by X and Y coordinates
+          // The 4 actual crop marks will share 2 X values and 2 Y values
+          std::map<double, int> xCounts;
+          std::map<double, int> yCounts;
 
+          const double coordTolerance = 10.0;
+
+          // Count corners at each X and Y coordinate
           for (const auto &corner : uniqueCorners) {
-            roughMinX = std::min(roughMinX, corner.first);
-            roughMaxX = std::max(roughMaxX, corner.first);
-            roughMinY = std::min(roughMinY, corner.second);
-            roughMaxY = std::max(roughMaxY, corner.second);
-          }
-
-          // Find corner closest to each extreme position
-          const double cornerTolerance = 50.0;
-
-          auto findClosest = [&](double targetX, double targetY) {
-            double bestDist = std::numeric_limits<double>::max();
-            std::pair<double, double> best = {0, 0};
-
-            for (const auto &corner : uniqueCorners) {
-              double dx = corner.first - targetX;
-              double dy = corner.second - targetY;
-              double dist = std::sqrt(dx * dx + dy * dy);
-
-              if (dist < bestDist && dist < cornerTolerance) {
-                bestDist = dist;
-                best = corner;
+            // Find or increment X count
+            bool foundX = false;
+            for (auto &[x, count] : xCounts) {
+              if (std::abs(corner.first - x) < coordTolerance) {
+                count++;
+                foundX = true;
+                break;
               }
             }
-            return best;
-          };
+            if (!foundX) {
+              xCounts[corner.first] = 1;
+            }
 
-          auto bottomLeft = findClosest(roughMinX, roughMinY);
-          auto topLeft = findClosest(roughMinX, roughMaxY);
-          auto bottomRight = findClosest(roughMaxX, roughMinY);
-          auto topRight = findClosest(roughMaxX, roughMaxY);
+            // Find or increment Y count
+            bool foundY = false;
+            for (auto &[y, count] : yCounts) {
+              if (std::abs(corner.second - y) < coordTolerance) {
+                count++;
+                foundY = true;
+                break;
+              }
+            }
+            if (!foundY) {
+              yCounts[corner.second] = 1;
+            }
+          }
 
-          double minX = (bottomLeft.first + topLeft.first) / 2.0;
-          double maxX = (bottomRight.first + topRight.first) / 2.0;
-          double minY = (bottomLeft.second + bottomRight.second) / 2.0;
-          double maxY = (topLeft.second + topRight.second) / 2.0;
+          // Find the 2 X values with most corners
+          std::vector<std::pair<double, int>> xList(xCounts.begin(),
+                                                    xCounts.end());
+          std::sort(
+              xList.begin(), xList.end(),
+              [](const auto &a, const auto &b) { return a.second > b.second; });
 
-          std::cerr << "DEBUG: 4 corners: BL(" << bottomLeft.first << ","
-                    << bottomLeft.second << ") TL(" << topLeft.first << ","
-                    << topLeft.second << ") BR(" << bottomRight.first << ","
-                    << bottomRight.second << ") TR(" << topRight.first << ","
-                    << topRight.second << ")" << std::endl;
+          // Find the 2 Y values with most corners
+          std::vector<std::pair<double, int>> yList(yCounts.begin(),
+                                                    yCounts.end());
+          std::sort(
+              yList.begin(), yList.end(),
+              [](const auto &a, const auto &b) { return a.second > b.second; });
 
-          result.linesBoundingBoxX = minX;
-          result.linesBoundingBoxY = minY;
-          result.linesBoundingBoxWidth = maxX - minX;
-          result.linesBoundingBoxHeight = maxY - minY;
+          std::cerr << "DEBUG: Found " << xCounts.size()
+                    << " unique X coordinates, " << yCounts.size()
+                    << " unique Y coordinates" << std::endl;
 
-          std::cerr << "DEBUG: Crop box from crop marks: (" << minX << ", "
-                    << minY << ") to (" << maxX << ", " << maxY << ")"
-                    << std::endl;
-        } else {
-          // Fallback to original bounding box
-          result.linesBoundingBoxX = lineResult.boundingBoxX;
-          result.linesBoundingBoxY = lineResult.boundingBoxY;
-          result.linesBoundingBoxWidth = lineResult.boundingBoxWidth;
-          result.linesBoundingBoxHeight = lineResult.boundingBoxHeight;
+          if (xList.size() >= 2 && yList.size() >= 2) {
+            double leftX = std::min(xList[0].first, xList[1].first);
+            double rightX = std::max(xList[0].first, xList[1].first);
+            double bottomY = std::min(yList[0].first, yList[1].first);
+            double topY = std::max(yList[0].first, yList[1].first);
 
-          std::cerr << "DEBUG: Not enough crop marks found ("
-                    << cropMarkCorners.size() << "), using line bounding box"
-                    << std::endl;
+            double minX = leftX;
+            double maxX = rightX;
+            double minY = bottomY;
+            double maxY = topY;
+
+            std::cerr << "DEBUG: Most common coords - X: " << xList[0].first
+                      << " (n=" << xList[0].second << "), " << xList[1].first
+                      << " (n=" << xList[1].second << "); Y: " << yList[0].first
+                      << " (n=" << yList[0].second << "), " << yList[1].first
+                      << " (n=" << yList[1].second << ")" << std::endl;
+
+            result.linesBoundingBoxX = minX;
+            result.linesBoundingBoxY = minY;
+            result.linesBoundingBoxWidth = maxX - minX;
+            result.linesBoundingBoxHeight = maxY - minY;
+
+            std::cerr << "DEBUG: Crop box from crop marks: (" << minX << ", "
+                      << minY << ") to (" << maxX << ", " << maxY << ")"
+                      << std::endl;
+          } else {
+            // Fallback to original bounding box
+            result.linesBoundingBoxX = lineResult.boundingBoxX;
+            result.linesBoundingBoxY = lineResult.boundingBoxY;
+            result.linesBoundingBoxWidth = lineResult.boundingBoxWidth;
+            result.linesBoundingBoxHeight = lineResult.boundingBoxHeight;
+
+            std::cerr << "DEBUG: Not enough crop marks found ("
+                      << cropMarkCorners.size() << "), using line bounding box"
+                      << std::endl;
+          }
         }
       }
     } catch (const std::exception &e) {
@@ -2589,8 +2620,8 @@ OCRAnalysis::renderElementsToPNG(const PDFElements &elements,
 
     // Draw rectangles (PDF bottom-left origin -> convert to top-left)
     // DISABLED: Rectangles are structural/decorative elements (borders, crop
-    // marks) They should not be rendered in content extraction - only text and
-    // images matter
+    // marks) They should not be rendered in content extraction - only text
+    // and images matter
     /*
       cairo_set_source_rgb(cr, 0.8, 0.8, 0.8);
       cairo_set_line_width(cr, 1.0 / scale);
@@ -2607,10 +2638,10 @@ OCRAnalysis::renderElementsToPNG(const PDFElements &elements,
           continue;
         }
 
-        // Calculate what percentage of the rectangle is inside the content area
-        double clippedArea = (rectRight - rectLeft) * (rectBottom - rectTop);
-        double totalArea = rect.width * rect.height;
-        double insideRatio = clippedArea / totalArea;
+        // Calculate what percentage of the rectangle is inside the content
+      area double clippedArea = (rectRight - rectLeft) * (rectBottom -
+      rectTop); double totalArea = rect.width * rect.height; double
+      insideRatio = clippedArea / totalArea;
 
         // Only render if more than 50% of the rectangle is inside
         if (insideRatio <= 0.5) {
@@ -2641,9 +2672,9 @@ OCRAnalysis::renderElementsToPNG(const PDFElements &elements,
       */
 
     // Draw lines (PDF bottom-left origin -> convert to top-left)
-    // DISABLED: Lines are structural/decorative elements (borders, crop marks,
-    // dividers) They should not be rendered in content extraction - only text
-    // and images matter
+    // DISABLED: Lines are structural/decorative elements (borders, crop
+    // marks, dividers) They should not be rendered in content extraction -
+    // only text and images matter
     /*
       cairo_set_source_rgb(cr, 0.0, 0.0, 0.0);
       cairo_set_line_width(cr, 0.5 / scale);
