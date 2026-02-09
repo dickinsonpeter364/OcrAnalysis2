@@ -1411,11 +1411,98 @@ OCRAnalysis::extractPDFElements(const std::string &pdfPath, double minRectSize,
         result.graphicLines = std::move(filteredLines);
         result.graphicLineCount = static_cast<int>(result.graphicLines.size());
 
-        // Copy interior bounding box dimensions
-        result.linesBoundingBoxX = lineResult.boundingBoxX;
-        result.linesBoundingBoxY = lineResult.boundingBoxY;
-        result.linesBoundingBoxWidth = lineResult.boundingBoxWidth;
-        result.linesBoundingBoxHeight = lineResult.boundingBoxHeight;
+        // Detect crop marks and calculate interior box from intersection points
+        // Crop marks are pairs of perpendicular lines at the corners
+        std::vector<std::pair<double, double>> cropMarkCorners;
+
+        // Find potential crop mark lines (short lines near page edges)
+        std::vector<PDFLine> horizontalCropLines;
+        std::vector<PDFLine> verticalCropLines;
+
+        const double cropMarkMaxLength = 30.0; // Crop marks are typically short
+        const double cropMarkMinLength = 10.0;
+
+        for (const auto &line : lineResult.lines) {
+          double length = std::sqrt(std::pow(line.x2 - line.x1, 2) +
+                                    std::pow(line.y2 - line.y1, 2));
+
+          if (length >= cropMarkMinLength && length <= cropMarkMaxLength) {
+            if (line.isHorizontal) {
+              horizontalCropLines.push_back(line);
+            } else if (line.isVertical) {
+              verticalCropLines.push_back(line);
+            }
+          }
+        }
+
+        std::cerr << "DEBUG: Found " << horizontalCropLines.size()
+                  << " potential horizontal crop mark lines, "
+                  << verticalCropLines.size() << " vertical" << std::endl;
+
+        // Find intersection points of perpendicular crop mark lines
+        const double intersectionTolerance =
+            5.0; // Points must be within this distance
+
+        for (const auto &hLine : horizontalCropLines) {
+          double hY = (hLine.y1 + hLine.y2) / 2.0;
+
+          for (const auto &vLine : verticalCropLines) {
+            double vX = (vLine.x1 + vLine.x2) / 2.0;
+
+            // Check if lines are close enough to form a crop mark
+            double hMinX = std::min(hLine.x1, hLine.x2);
+            double hMaxX = std::max(hLine.x1, hLine.x2);
+            double vMinY = std::min(vLine.y1, vLine.y2);
+            double vMaxY = std::max(vLine.y1, vLine.y2);
+
+            // Check if the lines could intersect (extended)
+            bool hLineNearVLine = (vX >= hMinX - intersectionTolerance &&
+                                   vX <= hMaxX + intersectionTolerance);
+            bool vLineNearHLine = (hY >= vMinY - intersectionTolerance &&
+                                   hY <= vMaxY + intersectionTolerance);
+
+            if (hLineNearVLine && vLineNearHLine) {
+              // This is a potential crop mark corner
+              cropMarkCorners.push_back({vX, hY});
+              std::cerr << "DEBUG: Found crop mark corner at (" << vX << ", "
+                        << hY << ")" << std::endl;
+            }
+          }
+        }
+
+        // Calculate interior box from crop mark corners
+        if (cropMarkCorners.size() >= 4) {
+          double minX = std::numeric_limits<double>::max();
+          double minY = std::numeric_limits<double>::max();
+          double maxX = std::numeric_limits<double>::lowest();
+          double maxY = std::numeric_limits<double>::lowest();
+
+          for (const auto &corner : cropMarkCorners) {
+            minX = std::min(minX, corner.first);
+            maxX = std::max(maxX, corner.first);
+            minY = std::min(minY, corner.second);
+            maxY = std::max(maxY, corner.second);
+          }
+
+          result.linesBoundingBoxX = minX;
+          result.linesBoundingBoxY = minY;
+          result.linesBoundingBoxWidth = maxX - minX;
+          result.linesBoundingBoxHeight = maxY - minY;
+
+          std::cerr << "DEBUG: Crop box from crop marks: (" << minX << ", "
+                    << minY << ") to (" << maxX << ", " << maxY << ")"
+                    << std::endl;
+        } else {
+          // Fallback to original bounding box
+          result.linesBoundingBoxX = lineResult.boundingBoxX;
+          result.linesBoundingBoxY = lineResult.boundingBoxY;
+          result.linesBoundingBoxWidth = lineResult.boundingBoxWidth;
+          result.linesBoundingBoxHeight = lineResult.boundingBoxHeight;
+
+          std::cerr << "DEBUG: Not enough crop marks found ("
+                    << cropMarkCorners.size() << "), using line bounding box"
+                    << std::endl;
+        }
       }
     } catch (const std::exception &e) {
       std::cerr << "DEBUG: Line extraction threw exception: " << e.what()
@@ -2348,30 +2435,17 @@ OCRAnalysis::renderElementsToPNG(const PDFElements &elements,
       }
     }
 
-    // Use element bounds as the actual crop box
-    // The linesBoundingBox represents the crop mark lines' bounding box,
-    // but the actual content area is defined by where elements are positioned
-    if (renderMinX != std::numeric_limits<double>::max()) {
-      minX = renderMinX;
-      minY = renderMinY;
-      maxX = renderMaxX;
-      maxY = renderMaxY;
+    // Use crop box from crop marks for positioning
+    // Crop box rendered from (0,0) with elements positioned relative to it
+    minX = cropBoxMinX;
+    minY = cropBoxMinY;
+    maxX = cropBoxMaxX;
+    maxY = cropBoxMaxY;
 
-      std::cerr << "DEBUG: Using element bounds as crop box (content area): ("
-                << minX << ", " << minY << ") to (" << maxX << ", " << maxY
-                << ")" << std::endl;
-      std::cerr << "DEBUG: linesBoundingBox was: (" << cropBoxMinX << ", "
-                << cropBoxMinY << ") to (" << cropBoxMaxX << ", " << cropBoxMaxY
-                << ")" << std::endl;
-    } else {
-      // Fallback to crop box if no elements found
-      minX = cropBoxMinX;
-      minY = cropBoxMinY;
-      maxX = cropBoxMaxX;
-      maxY = cropBoxMaxY;
-    }
+    std::cerr << "DEBUG: Using crop box from crop marks: (" << minX << ", "
+              << minY << ") to (" << maxX << ", " << maxY << ")" << std::endl;
 
-    // Use element bounds for image size
+    // Use crop box dimensions for image size
     const double margin = 0.0;
     double pageWidthPt = maxX - minX;
     double pageHeightPt = maxY - minY;
