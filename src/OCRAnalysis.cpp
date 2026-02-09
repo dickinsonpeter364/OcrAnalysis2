@@ -1495,25 +1495,92 @@ OCRAnalysis::extractPDFElements(const std::string &pdfPath, double minRectSize,
             if (hLineNearVLine && vLineNearHLine) {
               // This is a potential crop mark corner
               cropMarkCorners.push_back({vX, hY});
-              std::cerr << "DEBUG: Found crop mark corner at (" << vX << ", "
-                        << hY << ")" << std::endl;
+              // std::cerr << "DEBUG: Found crop mark corner at (" << vX << ", "
+              //           << hY << ")" << std::endl;
             }
           }
         }
 
         // Calculate interior box from crop mark corners
         if (cropMarkCorners.size() >= 4) {
-          double minX = std::numeric_limits<double>::max();
-          double minY = std::numeric_limits<double>::max();
-          double maxX = std::numeric_limits<double>::lowest();
-          double maxY = std::numeric_limits<double>::lowest();
+          // Cluster nearby corners together (many duplicates from multiple line
+          // widths)
+          const double clusterTolerance = 5.0;
+          std::vector<std::pair<double, double>> uniqueCorners;
 
           for (const auto &corner : cropMarkCorners) {
-            minX = std::min(minX, corner.first);
-            maxX = std::max(maxX, corner.first);
-            minY = std::min(minY, corner.second);
-            maxY = std::max(maxY, corner.second);
+            bool foundCluster = false;
+            for (auto &unique : uniqueCorners) {
+              double dx = corner.first - unique.first;
+              double dy = corner.second - unique.second;
+              double dist = std::sqrt(dx * dx + dy * dy);
+
+              if (dist < clusterTolerance) {
+                unique.first = (unique.first + corner.first) / 2.0;
+                unique.second = (unique.second + corner.second) / 2.0;
+                foundCluster = true;
+                break;
+              }
+            }
+
+            if (!foundCluster) {
+              uniqueCorners.push_back(corner);
+            }
           }
+
+          std::cerr << "DEBUG: Clustered " << cropMarkCorners.size()
+                    << " corners to " << uniqueCorners.size()
+                    << " unique corners" << std::endl;
+
+          // Find the 4 actual crop mark corners (at page corners)
+          // First get rough extremes
+          double roughMinX = std::numeric_limits<double>::max();
+          double roughMinY = std::numeric_limits<double>::max();
+          double roughMaxX = std::numeric_limits<double>::lowest();
+          double roughMaxY = std::numeric_limits<double>::lowest();
+
+          for (const auto &corner : uniqueCorners) {
+            roughMinX = std::min(roughMinX, corner.first);
+            roughMaxX = std::max(roughMaxX, corner.first);
+            roughMinY = std::min(roughMinY, corner.second);
+            roughMaxY = std::max(roughMaxY, corner.second);
+          }
+
+          // Find corner closest to each extreme position
+          const double cornerTolerance = 50.0;
+
+          auto findClosest = [&](double targetX, double targetY) {
+            double bestDist = std::numeric_limits<double>::max();
+            std::pair<double, double> best = {0, 0};
+
+            for (const auto &corner : uniqueCorners) {
+              double dx = corner.first - targetX;
+              double dy = corner.second - targetY;
+              double dist = std::sqrt(dx * dx + dy * dy);
+
+              if (dist < bestDist && dist < cornerTolerance) {
+                bestDist = dist;
+                best = corner;
+              }
+            }
+            return best;
+          };
+
+          auto bottomLeft = findClosest(roughMinX, roughMinY);
+          auto topLeft = findClosest(roughMinX, roughMaxY);
+          auto bottomRight = findClosest(roughMaxX, roughMinY);
+          auto topRight = findClosest(roughMaxX, roughMaxY);
+
+          double minX = (bottomLeft.first + topLeft.first) / 2.0;
+          double maxX = (bottomRight.first + topRight.first) / 2.0;
+          double minY = (bottomLeft.second + bottomRight.second) / 2.0;
+          double maxY = (topLeft.second + topRight.second) / 2.0;
+
+          std::cerr << "DEBUG: 4 corners: BL(" << bottomLeft.first << ","
+                    << bottomLeft.second << ") TL(" << topLeft.first << ","
+                    << topLeft.second << ") BR(" << bottomRight.first << ","
+                    << bottomRight.second << ") TR(" << topRight.first << ","
+                    << topRight.second << ")" << std::endl;
 
           result.linesBoundingBoxX = minX;
           result.linesBoundingBoxY = minY;
