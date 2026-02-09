@@ -2298,7 +2298,59 @@ OCRAnalysis::renderElementsToPNG(const PDFElements &elements,
     }
 
     // Calculate dimensions in points and pixels
-    // No margin - elements positioned relative to content area top-left
+    // Recalculate the actual bounding box of elements that will be rendered
+    // (only text and images, since rectangles and lines are disabled)
+    double actualMinX = std::numeric_limits<double>::max();
+    double actualMinY = std::numeric_limits<double>::max();
+    double actualMaxX = std::numeric_limits<double>::lowest();
+    double actualMaxY = std::numeric_limits<double>::lowest();
+
+    // Check text elements
+    for (const auto &text : elements.textLines) {
+      double textLeft = std::max(static_cast<double>(text.boundingBox.x), minX);
+      double textTop = std::max(static_cast<double>(text.boundingBox.y), minY);
+      double textRight = std::min(
+          static_cast<double>(text.boundingBox.x + text.boundingBox.width),
+          maxX);
+      double textBottom = std::min(
+          static_cast<double>(text.boundingBox.y + text.boundingBox.height),
+          maxY);
+
+      if (textLeft < textRight && textTop < textBottom) {
+        actualMinX = std::min(actualMinX, textLeft);
+        actualMinY = std::min(actualMinY, textTop);
+        actualMaxX = std::max(actualMaxX, textRight);
+        actualMaxY = std::max(actualMaxY, textBottom);
+      }
+    }
+
+    // Check image elements
+    for (const auto &img : elements.images) {
+      double imgLeft = std::max(img.x, minX);
+      double imgTop = std::max(img.y, minY);
+      double imgRight = std::min(img.x + img.displayWidth, maxX);
+      double imgBottom = std::min(img.y + img.displayHeight, maxY);
+
+      if (imgLeft < imgRight && imgTop < imgBottom) {
+        actualMinX = std::min(actualMinX, imgLeft);
+        actualMinY = std::min(actualMinY, imgTop);
+        actualMaxX = std::max(actualMaxX, imgRight);
+        actualMaxY = std::max(actualMaxY, imgBottom);
+      }
+    }
+
+    // Use actual bounds if we found any elements
+    if (actualMinX != std::numeric_limits<double>::max()) {
+      minX = actualMinX;
+      minY = actualMinY;
+      maxX = actualMaxX;
+      maxY = actualMaxY;
+
+      std::cerr << "DEBUG: Recalculated to actual element bounds: (" << minX
+                << ", " << minY << ") to (" << maxX << ", " << maxY << ")"
+                << std::endl;
+    }
+
     const double margin = 0.0;
     double pageWidthPt = maxX - minX;
     double pageHeightPt = maxY - minY;
