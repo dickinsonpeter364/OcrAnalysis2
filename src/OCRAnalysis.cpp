@@ -1442,8 +1442,9 @@ OCRAnalysis::extractPDFElements(const std::string &pdfPath, double minRectSize,
           result.pageWidth = pageRect.width();
           result.pageY = pageRect.y();
           result.pageHeight = pageRect.height();
-          std::cerr << "DEBUG: Page crop box: origin(" << pageRect.x() << ", " << pageRect.y()
-                    << ") size(" << result.pageWidth << " x " << result.pageHeight << ") points" << std::endl;
+          std::cerr << "DEBUG: Page crop box: origin(" << pageRect.x() << ", "
+                    << pageRect.y() << ") size(" << result.pageWidth << " x "
+                    << result.pageHeight << ") points" << std::endl;
         }
       }
     } catch (const std::exception &e) {
@@ -2190,67 +2191,91 @@ OCRAnalysis::renderElementsToPNG(const PDFElements &elements,
     // Find the actual bounding box of all elements to determine the offset
     // This allows us to normalize coordinates so rendering starts at (0,0)
     // Only include elements that are within the crop box
-    double minX = std::numeric_limits<double>::max();
-    double minY = std::numeric_limits<double>::max();
-    double maxX = std::numeric_limits<double>::lowest();
-    double maxY = std::numeric_limits<double>::lowest();
+    double minX, minY, maxX, maxY;
 
-    // Check all elements to find actual bounds (only those within crop box)
-    for (const auto &text : elements.textLines) {
-      // Skip elements outside crop box
-      if (text.boundingBox.x < elements.pageX || text.boundingBox.y < elements.pageY ||
-          text.boundingBox.x + text.boundingBox.width > elements.pageX + elements.pageWidth ||
-          text.boundingBox.y + text.boundingBox.height > elements.pageY + elements.pageHeight) {
-        continue;
-      }
-      minX = std::min(minX, static_cast<double>(text.boundingBox.x));
-      minY = std::min(minY, static_cast<double>(text.boundingBox.y));
-      maxX = std::max(maxX, static_cast<double>(text.boundingBox.x +
-                                                text.boundingBox.width));
-      maxY = std::max(maxY, static_cast<double>(text.boundingBox.y +
-                                                text.boundingBox.height));
-    }
+    // Use the interior bounding box (from crop marks) if available
+    if (elements.linesBoundingBoxWidth > 0 &&
+        elements.linesBoundingBoxHeight > 0) {
+      // Use the interior box calculated from crop marks/lines
+      minX = elements.linesBoundingBoxX;
+      minY = elements.linesBoundingBoxY;
+      maxX = elements.linesBoundingBoxX + elements.linesBoundingBoxWidth;
+      maxY = elements.linesBoundingBoxY + elements.linesBoundingBoxHeight;
 
-    for (const auto &img : elements.images) {
-      // Skip elements outside crop box
-      if (img.x < elements.pageX || img.y < elements.pageY ||
-          img.x + img.displayWidth > elements.pageX + elements.pageWidth ||
-          img.y + img.displayHeight > elements.pageY + elements.pageHeight) {
-        continue;
-      }
-      minX = std::min(minX, img.x);
-      minY = std::min(minY, img.y);
-      maxX = std::max(maxX, img.x + img.displayWidth);
-      maxY = std::max(maxY, img.y + img.displayHeight);
-    }
+      std::cerr << "DEBUG: Using linesBoundingBox as content area: (" << minX
+                << ", " << minY << ") to (" << maxX << ", " << maxY << ")"
+                << std::endl;
+    } else {
+      // Fall back to calculating bounding box from all elements
+      minX = std::numeric_limits<double>::max();
+      minY = std::numeric_limits<double>::max();
+      maxX = std::numeric_limits<double>::lowest();
+      maxY = std::numeric_limits<double>::lowest();
 
-    for (const auto &rect : elements.rectangles) {
-      // Skip elements outside crop box
-      if (rect.x < elements.pageX || rect.y < elements.pageY ||
-          rect.x + rect.width > elements.pageX + elements.pageWidth ||
-          rect.y + rect.height > elements.pageY + elements.pageHeight) {
-        continue;
+      // Check all elements to find actual bounds (only those within crop box)
+      for (const auto &text : elements.textLines) {
+        // Skip elements outside crop box
+        if (text.boundingBox.x < elements.pageX ||
+            text.boundingBox.y < elements.pageY ||
+            text.boundingBox.x + text.boundingBox.width >
+                elements.pageX + elements.pageWidth ||
+            text.boundingBox.y + text.boundingBox.height >
+                elements.pageY + elements.pageHeight) {
+          continue;
+        }
+        minX = std::min(minX, static_cast<double>(text.boundingBox.x));
+        minY = std::min(minY, static_cast<double>(text.boundingBox.y));
+        maxX = std::max(maxX, static_cast<double>(text.boundingBox.x +
+                                                  text.boundingBox.width));
+        maxY = std::max(maxY, static_cast<double>(text.boundingBox.y +
+                                                  text.boundingBox.height));
       }
-      minX = std::min(minX, rect.x);
-      minY = std::min(minY, rect.y);
-      maxX = std::max(maxX, rect.x + rect.width);
-      maxY = std::max(maxY, rect.y + rect.height);
-    }
 
-    for (const auto &line : elements.graphicLines) {
-      double lineMinX = std::min(line.x1, line.x2);
-      double lineMaxX = std::max(line.x1, line.x2);
-      double lineMinY = std::min(line.y1, line.y2);
-      double lineMaxY = std::max(line.y1, line.y2);
-      // Skip elements outside crop box
-      if (lineMinX < 0 || lineMinY < 0 || lineMaxX > elements.pageWidth ||
-          lineMaxY > elements.pageHeight) {
-        continue;
+      for (const auto &img : elements.images) {
+        // Skip elements outside crop box
+        if (img.x < elements.pageX || img.y < elements.pageY ||
+            img.x + img.displayWidth > elements.pageX + elements.pageWidth ||
+            img.y + img.displayHeight > elements.pageY + elements.pageHeight) {
+          continue;
+        }
+        minX = std::min(minX, img.x);
+        minY = std::min(minY, img.y);
+        maxX = std::max(maxX, img.x + img.displayWidth);
+        maxY = std::max(maxY, img.y + img.displayHeight);
       }
-      minX = std::min(minX, lineMinX);
-      minY = std::min(minY, lineMinY);
-      maxX = std::max(maxX, lineMaxX);
-      maxY = std::max(maxY, lineMaxY);
+
+      for (const auto &rect : elements.rectangles) {
+        // Skip elements outside crop box
+        if (rect.x < elements.pageX || rect.y < elements.pageY ||
+            rect.x + rect.width > elements.pageX + elements.pageWidth ||
+            rect.y + rect.height > elements.pageY + elements.pageHeight) {
+          continue;
+        }
+        minX = std::min(minX, rect.x);
+        minY = std::min(minY, rect.y);
+        maxX = std::max(maxX, rect.x + rect.width);
+        maxY = std::max(maxY, rect.y + rect.height);
+      }
+
+      for (const auto &line : elements.graphicLines) {
+        double lineMinX = std::min(line.x1, line.x2);
+        double lineMaxX = std::max(line.x1, line.x2);
+        double lineMinY = std::min(line.y1, line.y2);
+        double lineMaxY = std::max(line.y1, line.y2);
+        // Skip elements outside crop box
+        if (lineMinX < 0 || lineMinY < 0 || lineMaxX > elements.pageWidth ||
+            lineMaxY > elements.pageHeight) {
+          continue;
+        }
+        minX = std::min(minX, lineMinX);
+        minY = std::min(minY, lineMinY);
+        maxX = std::max(maxX, lineMaxX);
+        maxY = std::max(maxY, lineMaxY);
+      }
+
+      std::cerr << "DEBUG: Calculated bounding box from elements: (" << minX
+                << ", " << minY << ") to (" << maxX << ", " << maxY << ")"
+                << std::endl;
     }
 
     // If no elements found, use page dimensions with origin at (0,0)
@@ -2327,11 +2352,10 @@ OCRAnalysis::renderElementsToPNG(const PDFElements &elements,
     cairo_set_source_rgb(cr, 0.8, 0.8, 0.8);
     cairo_set_line_width(cr, 1.0 / scale);
     for (const auto &rect : elements.rectangles) {
-      // Check if rectangle is within page bounds (crop box)
-      if (rect.x < elements.pageX || rect.y < elements.pageY ||
-          rect.x + rect.width > elements.pageX + elements.pageWidth ||
-          rect.y + rect.height > elements.pageY + elements.pageHeight) {
-        continue; // Skip elements outside crop box
+      // Check if rectangle is within content bounding box
+      if (rect.x < minX || rect.y < minY || rect.x + rect.width > maxX ||
+          rect.y + rect.height > maxY) {
+        continue; // Skip elements outside content area
       }
 
       double x = rect.x - minX + margin;
@@ -2355,14 +2379,14 @@ OCRAnalysis::renderElementsToPNG(const PDFElements &elements,
     cairo_set_source_rgb(cr, 0.0, 0.0, 0.0);
     cairo_set_line_width(cr, 0.5 / scale);
     for (const auto &line : elements.graphicLines) {
-      // Check if line is within page bounds (crop box)
+      // Check if line is within content bounding box
       double lineMinX = std::min(line.x1, line.x2);
       double lineMaxX = std::max(line.x1, line.x2);
       double lineMinY = std::min(line.y1, line.y2);
       double lineMaxY = std::max(line.y1, line.y2);
-      if (lineMinX < 0 || lineMinY < 0 || lineMaxX > elements.pageWidth ||
-          lineMaxY > elements.pageHeight) {
-        continue; // Skip elements outside crop box
+      if (lineMinX < minX || lineMinY < minY || lineMaxX > maxX ||
+          lineMaxY > maxY) {
+        continue; // Skip elements outside content area
       }
 
       double x1 = line.x1 - minX + margin;
@@ -2387,11 +2411,10 @@ OCRAnalysis::renderElementsToPNG(const PDFElements &elements,
     // Draw images (PDF bottom-left origin -> convert to top-left)
     // Only render images within the crop box
     for (const auto &img : elements.images) {
-      // Check if image is within page bounds (crop box)
-      if (img.x < elements.pageX || img.y < elements.pageY ||
-          img.x + img.displayWidth > elements.pageX + elements.pageWidth ||
-          img.y + img.displayHeight > elements.pageY + elements.pageHeight) {
-        continue; // Skip elements outside crop box
+      // Check if image is within content bounding box
+      if (img.x < minX || img.y < minY || img.x + img.displayWidth > maxX ||
+          img.y + img.displayHeight > maxY) {
+        continue; // Skip elements outside content area
       }
 
       double x = img.x - minX + margin;
@@ -2465,11 +2488,11 @@ OCRAnalysis::renderElementsToPNG(const PDFElements &elements,
     cairo_set_font_size(cr, 10.0);
 
     for (const auto &text : elements.textLines) {
-      // Check if text is within page bounds (crop box)
-      if (text.boundingBox.x < elements.pageX || text.boundingBox.y < elements.pageY ||
-          text.boundingBox.x + text.boundingBox.width > elements.pageX + elements.pageWidth ||
-          text.boundingBox.y + text.boundingBox.height > elements.pageY + elements.pageHeight) {
-        continue; // Skip elements outside crop box
+      // Check if text is within content bounding box
+      if (text.boundingBox.x < minX || text.boundingBox.y < minY ||
+          text.boundingBox.x + text.boundingBox.width > maxX ||
+          text.boundingBox.y + text.boundingBox.height > maxY) {
+        continue; // Skip elements outside content area
       }
 
       double x = text.boundingBox.x - minX + margin;
@@ -2509,7 +2532,6 @@ OCRAnalysis::renderElementsToPNG(const PDFElements &elements,
         "Cairo not available - PNG rendering requires Cairo library";
     return result;
 #endif
-
   } catch (const std::exception &e) {
     result.errorMessage = std::string("Error rendering PNG: ") + e.what();
     return result;
