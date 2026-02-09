@@ -49,6 +49,20 @@ int main(int argc, char *argv[]) {
   std::cout << "  Lines: " << elements.graphicLineCount << std::endl;
   std::cout << std::endl;
 
+  // Debug: Show all extracted images
+  std::cout << "DEBUG: All extracted images:" << std::endl;
+  for (size_t i = 0; i < elements.images.size(); i++) {
+    const auto &img = elements.images[i];
+    std::cout << "  Image " << (i + 1) << ": x=" << img.x << ", y=" << img.y
+              << ", w=" << img.displayWidth << ", h=" << img.displayHeight
+              << std::endl;
+  }
+  std::cout << "DEBUG: linesBoundingBox: x=" << elements.linesBoundingBoxX
+            << ", y=" << elements.linesBoundingBoxY
+            << ", w=" << elements.linesBoundingBoxWidth
+            << ", h=" << elements.linesBoundingBoxHeight << std::endl;
+  std::cout << std::endl;
+
   // Render to PNG
   std::cout << "Rendering to PNG..." << std::endl;
   ocr::OCRAnalysis::PNGRenderResult result =

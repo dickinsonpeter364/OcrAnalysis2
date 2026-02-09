@@ -2278,6 +2278,10 @@ OCRAnalysis::renderElementsToPNG(const PDFElements &elements,
                 << std::endl;
     }
 
+    // Add small tolerance to account for rounding errors and crop mark
+    // imprecision
+    const double tolerance = 2.0; // points
+
     // If no elements found, use page dimensions with origin at (0,0)
     if (minX == std::numeric_limits<double>::max()) {
       minX = 0;
@@ -2411,9 +2415,10 @@ OCRAnalysis::renderElementsToPNG(const PDFElements &elements,
     // Draw images (PDF bottom-left origin -> convert to top-left)
     // Only render images within the crop box
     for (const auto &img : elements.images) {
-      // Check if image is within content bounding box
-      if (img.x < minX || img.y < minY || img.x + img.displayWidth > maxX ||
-          img.y + img.displayHeight > maxY) {
+      // Check if image is within content bounding box (with tolerance)
+      if (img.x < minX - tolerance || img.y < minY - tolerance ||
+          img.x + img.displayWidth > maxX + tolerance ||
+          img.y + img.displayHeight > maxY + tolerance) {
         continue; // Skip elements outside content area
       }
 
