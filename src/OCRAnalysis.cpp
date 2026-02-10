@@ -273,6 +273,37 @@ OCRResult OCRAnalysis::extractTextFromPDF(const std::string &pdfPath,
                 cv::Rect(static_cast<int>(x), static_cast<int>(y),
                          static_cast<int>(width), static_cast<int>(height));
 
+            // Extract font information
+            // Note: Poppler's get_font_name() and get_font_size() may not be
+            // available or may return invalid values in some versions
+            try {
+              std::string fontName = textBox.get_font_name();
+              if (fontName != "*ignored*" && !fontName.empty()) {
+                region.fontName = fontName;
+
+                // Detect bold and italic from font name
+                std::string fontNameLower = fontName;
+                std::transform(fontNameLower.begin(), fontNameLower.end(),
+                               fontNameLower.begin(), ::tolower);
+
+                region.isBold =
+                    (fontNameLower.find("bold") != std::string::npos);
+                region.isItalic =
+                    (fontNameLower.find("italic") != std::string::npos ||
+                     fontNameLower.find("oblique") != std::string::npos);
+              }
+            } catch (...) {
+              // Font name extraction failed, use defaults
+              region.fontName = "Sans";
+              region.isBold = false;
+              region.isItalic = false;
+            }
+
+            // Use bounding box height as font size approximation
+            // This is more reliable than get_font_size() which may not be
+            // available
+            region.fontSize = height;
+
             // Get rotation (in degrees)
             int rotation = textBox.rotation();
 
@@ -784,6 +815,13 @@ public:
 
     imgStr.close();
 
+    // Calculate rotation angle from CTM
+    // The CTM is [a, b, c, d, e, f] where:
+    // - (a, b) is the transformed (1, 0) vector
+    // - (c, d) is the transformed (0, 1) vector
+    // Rotation angle = atan2(b, a)
+    double rotationAngle = std::atan2(ctm[1], ctm[0]);
+
     // Create the embedded image entry
     OCRAnalysis::PDFEmbeddedImage img;
     img.image = mat;
@@ -795,6 +833,7 @@ public:
     img.y = y;
     img.displayWidth = displayWidth;
     img.displayHeight = displayHeight;
+    img.rotationAngle = rotationAngle;
     img.type = "raw";
 
     images.push_back(img);
@@ -2678,59 +2717,57 @@ OCRAnalysis::renderElementsToPNG(const PDFElements &elements,
       */
 
     // Draw lines (PDF bottom-left origin -> convert to top-left)
-    // DISABLED: Lines are structural/decorative elements (borders, crop
-    // marks, dividers) They should not be rendered in content extraction -
-    // only text and images matter
-    /*
-      cairo_set_source_rgb(cr, 0.0, 0.0, 0.0);
-      cairo_set_line_width(cr, 0.5 / scale);
-      for (const auto &line : elements.graphicLines) {
-        // Only render lines that are mostly inside the content area
-        // This prevents crop mark lines from being rendered
-        double lx1 = line.x1;
-        double ly1 = line.y1;
-        double lx2 = line.x2;
-        double ly2 = line.y2;
+    // Only render lines within the content area
+    cairo_set_source_rgb(cr, 0.0, 0.0, 0.0);
+    cairo_set_line_width(cr, 0.5 / scale);
+    for (const auto &line : elements.graphicLines) {
+      // Only render lines that are mostly inside the content area
+      // This prevents crop mark lines from being rendered
+      double lx1 = line.x1;
+      double ly1 = line.y1;
+      double lx2 = line.x2;
+      double ly2 = line.y2;
 
-        // Calculate original line length
-        double originalLength =
-            std::sqrt((lx2 - lx1) * (lx2 - lx1) + (ly2 - ly1) * (ly2 - ly1));
+      // Calculate original line length
+      double originalLength =
+          std::sqrt((lx2 - lx1) * (lx2 - lx1) + (ly2 - ly1) * (ly2 - ly1));
 
-        // Clip each endpoint to the bounding box
-        double clx1 = std::max(minX, std::min(maxX, lx1));
-        double cly1 = std::max(minY, std::min(maxY, ly1));
-        double clx2 = std::max(minX, std::min(maxX, lx2));
-        double cly2 = std::max(minY, std::min(maxY, ly2));
+      // Clip each endpoint to the bounding box
+      double clx1 = std::max(minX, std::min(maxX, lx1));
+      double cly1 = std::max(minY, std::min(maxY, ly1));
+      double clx2 = std::max(minX, std::min(maxX, lx2));
+      double cly2 = std::max(minY, std::min(maxY, ly2));
 
-        // Calculate clipped line length
-        double clippedLength = std::sqrt((clx2 - clx1) * (clx2 - clx1) +
-                                         (cly2 - cly1) * (cly2 - cly1));
+      // Calculate clipped line length
+      double clippedLength = std::sqrt((clx2 - clx1) * (clx2 - clx1) +
+                                       (cly2 - cly1) * (cly2 - cly1));
 
-        // Skip if line is completely outside or mostly outside
-        if (clippedLength == 0 ||
-            (originalLength > 0 && (clippedLength / originalLength) <= 0.5)) {
-          continue;
-        }
-
-        double x1 = clx1 - minX + margin;
-        double x2 = clx2 - minX + margin;
-        // Convert from PDF bottom-left to Cairo top-left
-        double y1 = pageHeightPt - (cly1 - minY) - margin;
-        double y2 = pageHeightPt - (cly2 - minY) - margin;
-        cairo_move_to(cr, x1, y1);
-        cairo_line_to(cr, x2, y2);
-        cairo_stroke(cr);
-
-        // Add to result
-        RenderedElement elem;
-        elem.type = RenderedElement::LINE;
-        elem.pixelX = static_cast<int>(std::min(x1, x2) * scale);
-        elem.pixelY = static_cast<int>(std::min(y1, y2) * scale);
-        elem.pixelWidth = static_cast<int>(std::abs(x2 - x1) * scale);
-        elem.pixelHeight = static_cast<int>(std::abs(y2 - y1) * scale);
-        result.elements.push_back(elem);
+      // Skip if line is completely outside or mostly outside
+      if (clippedLength == 0 ||
+          (originalLength > 0 && (clippedLength / originalLength) <= 0.5)) {
+        continue;
       }
-      */
+
+      double x1 = clx1 - minX + margin;
+      double x2 = clx2 - minX + margin;
+      // Convert from PDF bottom-left to Cairo top-left
+      double y1 = pageHeightPt - (cly1 - minY) - margin;
+      double y2 = pageHeightPt - (cly2 - minY) - margin;
+      cairo_move_to(cr, x1, y1);
+      cairo_line_to(cr, x2, y2);
+      cairo_stroke(cr);
+
+      // Add to result with endpoint coordinates
+      RenderedElement elem;
+      elem.type = RenderedElement::LINE;
+      elem.pixelX = static_cast<int>(x1 * scale);
+      elem.pixelY = static_cast<int>(y1 * scale);
+      elem.pixelX2 = static_cast<int>(x2 * scale);
+      elem.pixelY2 = static_cast<int>(y2 * scale);
+      elem.pixelWidth = static_cast<int>(std::abs(x2 - x1) * scale);
+      elem.pixelHeight = static_cast<int>(std::abs(y2 - y1) * scale);
+      result.elements.push_back(elem);
+    }
 
     // Draw images (PDF bottom-left origin -> convert to top-left)
     // Only render images within the crop box
@@ -2741,8 +2778,16 @@ OCRAnalysis::renderElementsToPNG(const PDFElements &elements,
       double imgRight = std::min(img.x + img.displayWidth, maxX);
       double imgBottom = std::min(img.y + img.displayHeight, maxY);
 
+      std::cerr << "DEBUG: Image at (" << img.x << ", " << img.y
+                << "), size: " << img.displayWidth << " x " << img.displayHeight
+                << ", clipped bounds: (" << imgLeft << ", " << imgTop
+                << ") to (" << imgRight << ", " << imgBottom << ")"
+                << std::endl;
+
       // Skip if image is completely outside content area
       if (imgLeft >= imgRight || imgTop >= imgBottom) {
+        std::cerr << "DEBUG: Skipping image - outside content area"
+                  << std::endl;
         continue;
       }
 
@@ -2759,13 +2804,47 @@ OCRAnalysis::renderElementsToPNG(const PDFElements &elements,
       if (!img.image.empty()) {
         // Convert cv::Mat to Cairo surface and draw
         cairo_save(cr);
-        cairo_translate(cr, x, y);
 
-        // Scale image to match display dimensions in points
-        // displayWidth/Height are in points, image.cols/rows are in pixels
-        double scaleX = img.displayWidth / static_cast<double>(img.image.cols);
-        double scaleY = img.displayHeight / static_cast<double>(img.image.rows);
-        cairo_scale(cr, scaleX, scaleY);
+        // For rotated images, we need special handling
+        bool is90DegRotation =
+            std::abs(std::abs(img.rotationAngle) - M_PI / 2.0) < 0.1;
+
+        if (is90DegRotation) {
+          // For 90-degree rotation:
+          // The AABB position (x,y) and dimensions (displayWidth,
+          // displayHeight) are correct But we need to rotate the image content
+
+          cairo_translate(cr, x, y);
+
+          // Move to the center of the AABB
+          cairo_translate(cr, img.displayWidth / 2.0, img.displayHeight / 2.0);
+
+          // Rotate (negate because Cairo's Y-axis is flipped)
+          cairo_rotate(cr, -img.rotationAngle);
+
+          // For 90-degree rotation, the image dimensions are swapped
+          // Original image is width x height pixels
+          // After rotation, it occupies height x width in the rotated space
+          // We need to scale to fit displayHeight x displayWidth
+          double scaleX =
+              img.displayHeight / static_cast<double>(img.image.cols);
+          double scaleY =
+              img.displayWidth / static_cast<double>(img.image.rows);
+          cairo_scale(cr, scaleX, scaleY);
+
+          // Move so that the image center is at origin
+          cairo_translate(cr, -img.image.cols / 2.0, -img.image.rows / 2.0);
+
+        } else {
+          // No rotation or non-90-degree rotation
+          cairo_translate(cr, x, y);
+
+          double scaleX =
+              img.displayWidth / static_cast<double>(img.image.cols);
+          double scaleY =
+              img.displayHeight / static_cast<double>(img.image.rows);
+          cairo_scale(cr, scaleX, scaleY);
+        }
 
         // Convert BGR to RGB
         cv::Mat rgbImage;
@@ -2812,15 +2891,13 @@ OCRAnalysis::renderElementsToPNG(const PDFElements &elements,
       elem.pixelWidth = static_cast<int>(img.displayWidth * scale);
       elem.pixelHeight = static_cast<int>(img.displayHeight * scale);
       elem.image = img.image.clone();
+      elem.rotationAngle = img.rotationAngle;
       result.elements.push_back(elem);
     }
 
     // Draw text (PDF bottom-left origin -> convert to top-left)
     // Only render text within the crop box
     cairo_set_source_rgb(cr, 0.0, 0.0, 0.0);
-    cairo_select_font_face(cr, "Sans", CAIRO_FONT_SLANT_NORMAL,
-                           CAIRO_FONT_WEIGHT_NORMAL);
-    cairo_set_font_size(cr, 10.0);
 
     for (const auto &text : elements.textLines) {
       // Clip text to content bounding box
@@ -2840,13 +2917,30 @@ OCRAnalysis::renderElementsToPNG(const PDFElements &elements,
 
       double x = text.boundingBox.x - minX + margin;
       // Convert from PDF bottom-left to Cairo top-left
-      double y = pageHeightPt - (text.boundingBox.y - minY) - margin +
-                 10; // Baseline offset
+      // text.boundingBox.y is the bottom of the text in PDF coordinates
+      double y = pageHeightPt - (text.boundingBox.y - minY) - margin;
 
       std::cerr << "DEBUG: Rendering text at (" << x << ", " << y
                 << "), original PDF pos: (" << text.boundingBox.x << ", "
                 << text.boundingBox.y << "), text: " << text.text.substr(0, 20)
-                << std::endl;
+                << ", font: " << text.fontName << " " << text.fontSize << "pt"
+                << (text.isBold ? " bold" : "")
+                << (text.isItalic ? " italic" : "") << std::endl;
+
+      // Set font based on text region properties
+      std::string fontFamily = text.fontName.empty() ? "Sans" : text.fontName;
+      double fontSize = (text.fontSize > 0) ? text.fontSize : 10.0;
+
+      // Determine Cairo font slant
+      cairo_font_slant_t slant =
+          text.isItalic ? CAIRO_FONT_SLANT_ITALIC : CAIRO_FONT_SLANT_NORMAL;
+
+      // Determine Cairo font weight
+      cairo_font_weight_t weight =
+          text.isBold ? CAIRO_FONT_WEIGHT_BOLD : CAIRO_FONT_WEIGHT_NORMAL;
+
+      cairo_select_font_face(cr, fontFamily.c_str(), slant, weight);
+      cairo_set_font_size(cr, fontSize);
 
       cairo_move_to(cr, x, y);
       cairo_show_text(cr, text.text.c_str());
@@ -2855,11 +2949,14 @@ OCRAnalysis::renderElementsToPNG(const PDFElements &elements,
       RenderedElement elem;
       elem.type = RenderedElement::TEXT;
       elem.pixelX = static_cast<int>(x * scale);
-      elem.pixelY =
-          static_cast<int>((y - 10) * scale); // Subtract baseline offset
+      elem.pixelY = static_cast<int>(y * scale);
       elem.pixelWidth = static_cast<int>(text.boundingBox.width * scale);
       elem.pixelHeight = static_cast<int>(text.boundingBox.height * scale);
       elem.text = text.text;
+      elem.fontName = fontFamily;
+      elem.fontSize = fontSize;
+      elem.isBold = text.isBold;
+      elem.isItalic = text.isItalic;
       result.elements.push_back(elem);
     }
 

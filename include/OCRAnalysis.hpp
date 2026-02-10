@@ -29,6 +29,12 @@ struct TextRegion {
   float confidence;     ///< Confidence score (0-100)
   int level;            ///< Hierarchy level (word, line, paragraph, block)
   TextOrientation orientation; ///< Detected text orientation
+
+  // Font information (from PDF extraction)
+  std::string fontName = ""; ///< Font family name
+  double fontSize = 0.0;     ///< Font size in points
+  bool isBold = false;       ///< Whether font is bold
+  bool isItalic = false;     ///< Whether font is italic
 };
 
 /**
@@ -199,6 +205,7 @@ public:
     double y;             ///< Y position on page (PDF coordinates)
     double displayWidth;  ///< Display width on page
     double displayHeight; ///< Display height on page
+    double rotationAngle; ///< Rotation angle in radians (counterclockwise)
     std::string type;     ///< Image type (e.g., "JPEG", "PNG", "raw")
   };
 
@@ -402,12 +409,27 @@ public:
     enum Type { TEXT, IMAGE, RECTANGLE, LINE };
 
     Type type;
-    int pixelX;       ///< X coordinate in pixels
-    int pixelY;       ///< Y coordinate in pixels
-    int pixelWidth;   ///< Width in pixels
-    int pixelHeight;  ///< Height in pixels
-    std::string text; ///< Text content (for TEXT type)
-    cv::Mat image;    ///< Image data (for IMAGE type)
+    int pixelX; ///< X coordinate in pixels (top-left for most, start point for
+                ///< lines)
+    int pixelY; ///< Y coordinate in pixels (top-left for most, start point for
+                ///< lines)
+    int pixelWidth;  ///< Width in pixels
+    int pixelHeight; ///< Height in pixels
+
+    // Text-specific fields
+    std::string text;      ///< Text content (for TEXT type)
+    std::string fontName;  ///< Font family name (for TEXT type)
+    double fontSize = 0.0; ///< Font size in points (for TEXT type)
+    bool isBold = false;   ///< Whether font is bold (for TEXT type)
+    bool isItalic = false; ///< Whether font is italic (for TEXT type)
+
+    // Image-specific fields
+    cv::Mat image; ///< Image data (for IMAGE type), properly rotated
+    double rotationAngle = 0.0; ///< Rotation angle in radians (for IMAGE type)
+
+    // Line-specific fields
+    int pixelX2 = 0; ///< End X coordinate in pixels (for LINE type)
+    int pixelY2 = 0; ///< End Y coordinate in pixels (for LINE type)
   };
 
   /**

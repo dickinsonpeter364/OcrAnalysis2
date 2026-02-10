@@ -193,6 +193,16 @@ target_link_libraries(test_strip_bleed_marks
         ocr_analysis
 )
 
+# Define the render info test executable
+add_executable(test_render_info
+    src/test_render_info.cpp
+)
+
+target_link_libraries(test_render_info
+    PRIVATE
+        ocr_analysis
+)
+
 # Optional: Install targets
 install(TARGETS ocr_analysis ocr_demo
     LIBRARY DESTINATION lib
