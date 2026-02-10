@@ -183,6 +183,16 @@ target_link_libraries(test_png_render
         ocr_analysis
 )
 
+# Define the bleed mark stripping test executable
+add_executable(test_strip_bleed_marks
+    src/test_strip_bleed_marks.cpp
+)
+
+target_link_libraries(test_strip_bleed_marks
+    PRIVATE
+        ocr_analysis
+)
+
 # Optional: Install targets
 install(TARGETS ocr_analysis ocr_demo
     LIBRARY DESTINATION lib

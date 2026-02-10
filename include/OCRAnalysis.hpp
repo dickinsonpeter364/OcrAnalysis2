@@ -378,6 +378,24 @@ public:
                                  double minLineLength = 5.0);
 
   /**
+   * @brief Strip bleed marks from a PDF file
+   *
+   * This method removes connected rectangles on horizontal lines from a PDF,
+   * including any lines forming those rectangles and any fills. This is useful
+   * for removing crop marks, registration marks, and other printing marks.
+   *
+   * The method:
+   * - Identifies all rectangles and lines on the first page
+   * - Finds rectangles that are all on the same horizontal line (Y-coordinate)
+   * - Removes these rectangles and their associated lines
+   * - Returns the filtered PDF elements that can be rendered
+   *
+   * @param pdfPath Path to the input PDF file
+   * @return PDFElements containing the filtered elements (without bleed marks)
+   */
+  PDFElements stripBleedMarks(const std::string &pdfPath);
+
+  /**
    * @brief Structure to hold rendered element with pixel coordinates
    */
   struct RenderedElement {
