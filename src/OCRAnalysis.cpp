@@ -452,6 +452,8 @@ OCRResult OCRAnalysis::extractTextFromPDF(const std::string &pdfPath,
 
         // If line-level extraction is requested, group words into lines
         if (level == PDFExtractionLevel::Line && !pageRegions.empty()) {
+          std::cerr << "DEBUG: Grouping " << pageRegions.size()
+                    << " text boxes into lines..." << std::endl;
           std::vector<TextRegion> lineRegions;
           std::vector<bool> used(pageRegions.size(), false);
 
@@ -461,6 +463,7 @@ OCRResult OCRAnalysis::extractTextFromPDF(const std::string &pdfPath,
 
             TextRegion lineRegion = pageRegions[i];
             used[i] = true;
+            int wordsInLine = 1;
 
             // Determine grouping tolerance based on orientation
             // For horizontal text, group by similar Y position
@@ -473,6 +476,12 @@ OCRResult OCRAnalysis::extractTextFromPDF(const std::string &pdfPath,
             int tolerance =
                 isVertical ? std::max(5, lineRegion.boundingBox.width / 2)
                            : std::max(5, lineRegion.boundingBox.height / 2);
+
+            std::cerr << "DEBUG: Starting line " << lineRegions.size()
+                      << " with text: \"" << lineRegion.text
+                      << "\" at Y=" << lineRegion.boundingBox.y
+                      << " height=" << lineRegion.boundingBox.height
+                      << " tolerance=" << tolerance << std::endl;
 
             // Find all words that belong to this line
             for (size_t j = i + 1; j < pageRegions.size(); j++) {
@@ -517,11 +526,22 @@ OCRResult OCRAnalysis::extractTextFromPDF(const std::string &pdfPath,
                                        candidate.boundingBox.width)));
                 onSameLine = (yDiff <= tolerance &&
                               horizontalGap < lineRegion.boundingBox.width * 3);
+
+                if (yDiff <= tolerance) {
+                  std::cerr << "DEBUG:   Candidate \"" << candidate.text
+                            << "\" at Y=" << candidate.boundingBox.y
+                            << " yCenter=" << yCenter2 << " yDiff=" << yDiff
+                            << " hGap=" << horizontalGap
+                            << " maxGap=" << (lineRegion.boundingBox.width * 3)
+                            << " -> " << (onSameLine ? "GROUPED" : "SKIPPED")
+                            << std::endl;
+                }
               }
 
               if (onSameLine) {
                 // Merge this word into the line
                 used[j] = true;
+                wordsInLine++;
 
                 // Expand bounding box to include this word
                 int newX =
@@ -547,8 +567,14 @@ OCRResult OCRAnalysis::extractTextFromPDF(const std::string &pdfPath,
               }
             }
 
+            std::cerr << "DEBUG: Completed line " << lineRegions.size()
+                      << " with " << wordsInLine << " words: \""
+                      << lineRegion.text << "\"" << std::endl;
             lineRegions.push_back(lineRegion);
           }
+
+          std::cerr << "DEBUG: Grouped into " << lineRegions.size()
+                    << " lines total" << std::endl;
 
           // Add line regions to result
           for (auto &region : lineRegions) {
@@ -1358,11 +1384,12 @@ OCRAnalysis::extractPDFElements(const std::string &pdfPath, double minRectSize,
   auto startTime = std::chrono::high_resolution_clock::now();
 
   try {
-    // Extract text as lines (grouped words with orientation) from first page
+    // Extract text as individual words (preserves exact positioning) from first
+    // page
     std::cerr << "DEBUG: Extracting text from first page..." << std::endl;
     try {
       OCRResult textResult =
-          extractTextFromPDF(pdfPath, PDFExtractionLevel::Line);
+          extractTextFromPDF(pdfPath, PDFExtractionLevel::Word);
       std::cerr << "DEBUG: Text extraction completed, success="
                 << textResult.success << std::endl;
       if (textResult.success) {
@@ -2430,10 +2457,9 @@ int OCRAnalysis::findBestRotation(const cv::Mat &image) {
   return bestRotation;
 }
 
-OCRAnalysis::PNGRenderResult
-OCRAnalysis::renderElementsToPNG(const PDFElements &elements,
-                                 const std::string &pdfPath, double dpi,
-                                 const std::string &outputDir) {
+OCRAnalysis::PNGRenderResult OCRAnalysis::renderElementsToPNG(
+    const PDFElements &elements, const std::string &pdfPath, double dpi,
+    const std::string &outputDir, RenderBoundsMode boundsMode) {
 
   PNGRenderResult result;
 
@@ -2443,18 +2469,54 @@ OCRAnalysis::renderElementsToPNG(const PDFElements &elements,
     // Only include elements that are within the crop box
     double minX, minY, maxX, maxY;
 
-    // Use the interior bounding box (from crop marks) if available
-    if (elements.linesBoundingBoxWidth > 0 &&
-        elements.linesBoundingBoxHeight > 0) {
+    if (boundsMode == RenderBoundsMode::USE_LARGEST_RECTANGLE) {
+      // Use the largest rectangle to determine bounds
+      if (elements.rectangles.empty()) {
+        result.errorMessage =
+            "No rectangles found for USE_LARGEST_RECTANGLE mode";
+        return result;
+      }
+
+      // Find the largest rectangle by area
+      double largestArea = 0;
+      const PDFRectangle *largestRect = nullptr;
+
+      for (const auto &rect : elements.rectangles) {
+        double area = rect.width * rect.height;
+        if (area > largestArea) {
+          largestArea = area;
+          largestRect = &rect;
+        }
+      }
+
+      if (largestRect == nullptr) {
+        result.errorMessage = "Could not find valid rectangle";
+        return result;
+      }
+
+      // Use only the rectangle bounds - do not expand
+      minX = largestRect->x;
+      minY = largestRect->y;
+      maxX = largestRect->x + largestRect->width;
+      maxY = largestRect->y + largestRect->height;
+
+      std::cerr << "DEBUG: Using largest rectangle bounds (no expansion): ("
+                << minX << ", " << minY << ") to (" << maxX << ", " << maxY
+                << ")"
+                << " (area: " << largestArea << ")" << std::endl;
+
+    } else if (elements.linesBoundingBoxWidth > 0 &&
+               elements.linesBoundingBoxHeight > 0) {
       // Use the interior box calculated from crop marks/lines
       minX = elements.linesBoundingBoxX;
       minY = elements.linesBoundingBoxY;
       maxX = elements.linesBoundingBoxX + elements.linesBoundingBoxWidth;
       maxY = elements.linesBoundingBoxY + elements.linesBoundingBoxHeight;
 
-      std::cerr << "DEBUG: Using linesBoundingBox as content area: (" << minX
-                << ", " << minY << ") to (" << maxX << ", " << maxY << ")"
-                << std::endl;
+      std::cerr
+          << "DEBUG: Using linesBoundingBox (crop marks) as content area: ("
+          << minX << ", " << minY << ") to (" << maxX << ", " << maxY << ")"
+          << std::endl;
     } else {
       // Fall back to calculating bounding box from all elements
       minX = std::numeric_limits<double>::max();
@@ -2721,38 +2783,27 @@ OCRAnalysis::renderElementsToPNG(const PDFElements &elements,
     cairo_set_source_rgb(cr, 0.0, 0.0, 0.0);
     cairo_set_line_width(cr, 0.5 / scale);
     for (const auto &line : elements.graphicLines) {
-      // Only render lines that are mostly inside the content area
-      // This prevents crop mark lines from being rendered
       double lx1 = line.x1;
       double ly1 = line.y1;
       double lx2 = line.x2;
       double ly2 = line.y2;
 
-      // Calculate original line length
-      double originalLength =
-          std::sqrt((lx2 - lx1) * (lx2 - lx1) + (ly2 - ly1) * (ly2 - ly1));
+      double lineMinX = std::min(lx1, lx2);
+      double lineMaxX = std::max(lx1, lx2);
+      double lineMinY = std::min(ly1, ly2);
+      double lineMaxY = std::max(ly1, ly2);
 
-      // Clip each endpoint to the bounding box
-      double clx1 = std::max(minX, std::min(maxX, lx1));
-      double cly1 = std::max(minY, std::min(maxY, ly1));
-      double clx2 = std::max(minX, std::min(maxX, lx2));
-      double cly2 = std::max(minY, std::min(maxY, ly2));
-
-      // Calculate clipped line length
-      double clippedLength = std::sqrt((clx2 - clx1) * (clx2 - clx1) +
-                                       (cly2 - cly1) * (cly2 - cly1));
-
-      // Skip if line is completely outside or mostly outside
-      if (clippedLength == 0 ||
-          (originalLength > 0 && (clippedLength / originalLength) <= 0.5)) {
+      // Skip if line is outside the content area (strict filtering)
+      if (lineMinX < minX || lineMaxX > maxX || lineMinY < minY ||
+          lineMaxY > maxY) {
         continue;
       }
 
-      double x1 = clx1 - minX + margin;
-      double x2 = clx2 - minX + margin;
+      double x1 = lx1 - minX + margin;
+      double x2 = lx2 - minX + margin;
       // Convert from PDF bottom-left to Cairo top-left
-      double y1 = pageHeightPt - (cly1 - minY) - margin;
-      double y2 = pageHeightPt - (cly2 - minY) - margin;
+      double y1 = pageHeightPt - (ly1 - minY) - margin;
+      double y2 = pageHeightPt - (ly2 - minY) - margin;
       cairo_move_to(cr, x1, y1);
       cairo_line_to(cr, x2, y2);
       cairo_stroke(cr);
@@ -2900,18 +2951,18 @@ OCRAnalysis::renderElementsToPNG(const PDFElements &elements,
     cairo_set_source_rgb(cr, 0.0, 0.0, 0.0);
 
     for (const auto &text : elements.textLines) {
-      // Clip text to content bounding box
-      double textLeft = std::max(static_cast<double>(text.boundingBox.x), minX);
-      double textTop = std::max(static_cast<double>(text.boundingBox.y), minY);
-      double textRight = std::min(
-          static_cast<double>(text.boundingBox.x + text.boundingBox.width),
-          maxX);
-      double textBottom = std::min(
-          static_cast<double>(text.boundingBox.y + text.boundingBox.height),
-          maxY);
+      // Skip if text starts outside the content area
+      // Only render text that is mostly within the bounds
+      double textLeft = text.boundingBox.x;
+      double textTop = text.boundingBox.y;
+      double textRight = text.boundingBox.x + text.boundingBox.width;
+      double textBottom = text.boundingBox.y + text.boundingBox.height;
 
-      // Skip if text is completely outside content area
-      if (textLeft >= textRight || textTop >= textBottom) {
+      // Skip if text left edge is outside the left bound or right edge is
+      // outside the right bound This ensures only text that is mostly within
+      // the rectangle is rendered
+      if (textLeft < minX || textRight > maxX || textTop < minY ||
+          textBottom > maxY) {
         continue;
       }
 
@@ -2922,9 +2973,10 @@ OCRAnalysis::renderElementsToPNG(const PDFElements &elements,
 
       std::cerr << "DEBUG: Rendering text at (" << x << ", " << y
                 << "), original PDF pos: (" << text.boundingBox.x << ", "
-                << text.boundingBox.y << "), text: " << text.text.substr(0, 20)
-                << ", font: " << text.fontName << " " << text.fontSize << "pt"
-                << (text.isBold ? " bold" : "")
+                << text.boundingBox.y
+                << "), bbox width: " << text.boundingBox.width << ", text: \""
+                << text.text.substr(0, 20) << "\", font: " << text.fontName
+                << " " << text.fontSize << "pt" << (text.isBold ? " bold" : "")
                 << (text.isItalic ? " italic" : "") << std::endl;
 
       // Set font based on text region properties

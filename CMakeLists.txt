@@ -203,6 +203,16 @@ target_link_libraries(test_render_info
         ocr_analysis
 )
 
+# Define the bounds modes test executable
+add_executable(test_bounds_modes
+    src/test_bounds_modes.cpp
+)
+
+target_link_libraries(test_bounds_modes
+    PRIVATE
+        ocr_analysis
+)
+
 # Optional: Install targets
 install(TARGETS ocr_analysis ocr_demo
     LIBRARY DESTINATION lib

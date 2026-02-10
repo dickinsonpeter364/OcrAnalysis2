@@ -433,6 +433,15 @@ public:
   };
 
   /**
+   * @brief Mode for determining rendering bounds
+   */
+  enum class RenderBoundsMode {
+    USE_CROP_MARKS,       ///< Use crop marks to determine rendering bounds
+    USE_LARGEST_RECTANGLE ///< Use largest rectangle to determine rendering
+                          ///< bounds
+  };
+
+  /**
    * @brief Result of PNG rendering operation
    */
   struct PNGRenderResult {
@@ -458,13 +467,15 @@ public:
    * @param pdfPath Original PDF path (used for output filename)
    * @param dpi Resolution in dots per inch (default: 300)
    * @param outputDir Directory to save the PNG (default: "images")
+   * @param boundsMode Mode for determining rendering bounds (default:
+   * USE_CROP_MARKS)
    * @return PNGRenderResult containing success status, output path, and pixel
    * coordinates
    */
-  PNGRenderResult renderElementsToPNG(const PDFElements &elements,
-                                      const std::string &pdfPath,
-                                      double dpi = 300.0,
-                                      const std::string &outputDir = "images");
+  PNGRenderResult renderElementsToPNG(
+      const PDFElements &elements, const std::string &pdfPath,
+      double dpi = 300.0, const std::string &outputDir = "images",
+      RenderBoundsMode boundsMode = RenderBoundsMode::USE_CROP_MARKS);
 
   /**
    * @brief Get text from a specific region of an image

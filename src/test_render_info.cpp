@@ -1,18 +1,31 @@
 #include "OCRAnalysis.hpp"
+#include <algorithm>
 #include <iomanip>
 #include <iostream>
-
+#include <string>
 
 int main(int argc, char *argv[]) {
   if (argc < 2) {
-    std::cerr << "Usage: " << argv[0] << " <pdf_file> [output_dir] [dpi]"
-              << std::endl;
+    std::cerr << "Usage: " << argv[0]
+              << " <pdf_file> [output_dir] [dpi] [bounds_mode]" << std::endl;
+    std::cerr << "  bounds_mode: 'crop' (default) or 'rect'" << std::endl;
     return 1;
   }
 
   std::string pdfPath = argv[1];
   std::string outputDir = (argc > 2) ? argv[2] : "images";
   double dpi = (argc > 3) ? std::stod(argv[3]) : 300.0;
+
+  // Parse bounds mode
+  ocr::OCRAnalysis::RenderBoundsMode boundsMode =
+      ocr::OCRAnalysis::RenderBoundsMode::USE_CROP_MARKS;
+  if (argc > 4) {
+    std::string modeStr = argv[4];
+    std::transform(modeStr.begin(), modeStr.end(), modeStr.begin(), ::tolower);
+    if (modeStr == "rect" || modeStr == "rectangle") {
+      boundsMode = ocr::OCRAnalysis::RenderBoundsMode::USE_LARGEST_RECTANGLE;
+    }
+  }
 
   try {
     ocr::OCRAnalysis analyzer;
@@ -27,8 +40,15 @@ int main(int argc, char *argv[]) {
     }
 
     // Render the filtered elements to PNG
-    auto renderResult =
-        analyzer.renderElementsToPNG(filteredElements, pdfPath, dpi, outputDir);
+    std::cout << "Rendering with bounds mode: "
+              << (boundsMode ==
+                          ocr::OCRAnalysis::RenderBoundsMode::USE_CROP_MARKS
+                      ? "USE_CROP_MARKS"
+                      : "USE_LARGEST_RECTANGLE")
+              << "\n";
+
+    auto renderResult = analyzer.renderElementsToPNG(
+        filteredElements, pdfPath, dpi, outputDir, boundsMode);
 
     if (!renderResult.success) {
       std::cerr << "Error rendering PNG: " << renderResult.errorMessage
