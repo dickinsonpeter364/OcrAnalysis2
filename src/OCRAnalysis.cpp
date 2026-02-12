@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -74,8 +75,24 @@ bool OCRAnalysis::initialize() {
     return true;
   }
 
-  const char *tessDataPath =
-      m_config.tessDataPath.empty() ? nullptr : m_config.tessDataPath.c_str();
+  const char *tessDataPath = nullptr;
+
+  // Priority 1: Use config path if provided
+  if (!m_config.tessDataPath.empty()) {
+    tessDataPath = m_config.tessDataPath.c_str();
+  }
+  // Priority 2: Check TESSDATA_PREFIX environment variable
+  else {
+    const char *envPath = std::getenv("TESSDATA_PREFIX");
+    if (envPath != nullptr) {
+      tessDataPath = envPath;
+    } else {
+      // Priority 3: Use default path
+      tessDataPath = "c:\\tessdata\\tessdata";
+      std::cerr << "TESSDATA_PREFIX not set, using default: " << tessDataPath
+                << std::endl;
+    }
+  }
 
   int result = m_tesseract->Init(tessDataPath, m_config.language.c_str());
 
@@ -1442,6 +1459,156 @@ OCRAnalysis::extractPDFElements(const std::string &pdfPath, double minRectSize,
       PDFLinesResult lineResult = extractLinesFromPDF(pdfPath, minLineLength);
       std::cerr << "DEBUG: Line extraction completed" << std::endl;
       if (lineResult.success) {
+        // First, detect rectangles formed by 4 lines
+        // Group horizontal and vertical lines
+        std::vector<PDFLine> horizontalLines, verticalLines;
+        const double parallelTolerance = 2.0;
+
+        for (const auto &line : lineResult.lines) {
+          if (line.isHorizontal) {
+            horizontalLines.push_back(line);
+          } else if (line.isVertical) {
+            verticalLines.push_back(line);
+          }
+        }
+
+        std::cerr << "DEBUG: Found " << horizontalLines.size()
+                  << " horizontal lines, " << verticalLines.size()
+                  << " vertical lines" << std::endl;
+
+        // Simple case: if we have exactly 2 horizontal and 2 vertical lines,
+        // they likely form a rectangle
+        if (horizontalLines.size() == 2 && verticalLines.size() == 2) {
+          const auto &h1 = horizontalLines[0];
+          const auto &h2 = horizontalLines[1];
+          const auto &v1 = verticalLines[0];
+          const auto &v2 = verticalLines[1];
+
+          if (h1.pageNumber == h2.pageNumber &&
+              h1.pageNumber == v1.pageNumber &&
+              h1.pageNumber == v2.pageNumber) {
+            double y1 = (h1.y1 + h1.y2) / 2.0;
+            double y2 = (h2.y1 + h2.y2) / 2.0;
+            double x1 = (v1.x1 + v1.x2) / 2.0;
+            double x2 = (v2.x1 + v2.x2) / 2.0;
+
+            double minX = std::min(x1, x2);
+            double maxX = std::max(x1, x2);
+            double minY = std::min(y1, y2);
+            double maxY = std::max(y1, y2);
+
+            PDFRectangle rect;
+            rect.pageNumber = h1.pageNumber;
+            rect.x = minX;
+            rect.y = minY;
+            rect.width = maxX - minX;
+            rect.height = maxY - minY;
+            rect.filled = false;
+            rect.stroked = true;
+            rect.lineWidth = 1.0;
+
+            result.rectangles.push_back(rect);
+            std::cerr << "DEBUG: Detected rectangle from 4 lines at (" << rect.x
+                      << ", " << rect.y << ") size: " << rect.width << "x"
+                      << rect.height << std::endl;
+          }
+        }
+
+        // Try to find rectangles formed by 2 horizontal + 2 vertical lines
+        for (size_t h1 = 0; h1 < horizontalLines.size(); h1++) {
+          for (size_t h2 = h1 + 1; h2 < horizontalLines.size(); h2++) {
+            const auto &hLine1 = horizontalLines[h1];
+            const auto &hLine2 = horizontalLines[h2];
+
+            // Check if they're on the same page and parallel
+            if (hLine1.pageNumber != hLine2.pageNumber)
+              continue;
+
+            double y1 = (hLine1.y1 + hLine1.y2) / 2.0;
+            double y2 = (hLine2.y1 + hLine2.y2) / 2.0;
+            if (std::abs(y1 - y2) < 10.0)
+              continue; // Too close, not a rectangle
+
+            // Find vertical lines that connect these horizontals
+            for (size_t v1 = 0; v1 < verticalLines.size(); v1++) {
+              for (size_t v2 = v1 + 1; v2 < verticalLines.size(); v2++) {
+                const auto &vLine1 = verticalLines[v1];
+                const auto &vLine2 = verticalLines[v2];
+
+                if (vLine1.pageNumber != hLine1.pageNumber)
+                  continue;
+
+                double x1 = (vLine1.x1 + vLine1.x2) / 2.0;
+                double x2 = (vLine2.x1 + vLine2.x2) / 2.0;
+                if (std::abs(x1 - x2) < 10.0)
+                  continue; // Too close
+
+                // Check if these 4 lines form a rectangle
+                double minX = std::min(x1, x2);
+                double maxX = std::max(x1, x2);
+                double minY = std::min(y1, y2);
+                double maxY = std::max(y1, y2);
+
+                // Check if horizontal lines span the width
+                double h1MinX = std::min(hLine1.x1, hLine1.x2);
+                double h1MaxX = std::max(hLine1.x1, hLine1.x2);
+                double h2MinX = std::min(hLine2.x1, hLine2.x2);
+                double h2MaxX = std::max(hLine2.x1, hLine2.x2);
+
+                // Check if vertical lines span the height
+                double v1MinY = std::min(vLine1.y1, vLine1.y2);
+                double v1MaxY = std::max(vLine1.y1, vLine1.y2);
+                double v2MinY = std::min(vLine2.y1, vLine2.y2);
+                double v2MaxY = std::max(vLine2.y1, vLine2.y2);
+
+                const double spanTolerance = 10.0;
+                bool h1Spans = (h1MinX <= minX + spanTolerance &&
+                                h1MaxX >= maxX - spanTolerance);
+                bool h2Spans = (h2MinX <= minX + spanTolerance &&
+                                h2MaxX >= maxX - spanTolerance);
+                bool v1Spans = (v1MinY <= minY + spanTolerance &&
+                                v1MaxY >= maxY - spanTolerance);
+                bool v2Spans = (v2MinY <= minY + spanTolerance &&
+                                v2MaxY >= maxY - spanTolerance);
+
+                if (h1Spans && h2Spans && v1Spans && v2Spans) {
+                  // Found a rectangle!
+                  PDFRectangle rect;
+                  rect.pageNumber = hLine1.pageNumber;
+                  rect.x = minX;
+                  rect.y = minY;
+                  rect.width = maxX - minX;
+                  rect.height = maxY - minY;
+                  rect.filled = false;
+                  rect.stroked = true;
+                  rect.lineWidth = 1.0;
+
+                  // Check if we already have this rectangle (avoid duplicates)
+                  bool isDuplicate = false;
+                  for (const auto &existing : result.rectangles) {
+                    if (existing.pageNumber == rect.pageNumber &&
+                        std::abs(existing.x - rect.x) < 5.0 &&
+                        std::abs(existing.y - rect.y) < 5.0 &&
+                        std::abs(existing.width - rect.width) < 5.0 &&
+                        std::abs(existing.height - rect.height) < 5.0) {
+                      isDuplicate = true;
+                      break;
+                    }
+                  }
+
+                  if (!isDuplicate) {
+                    result.rectangles.push_back(rect);
+                    std::cerr << "DEBUG: Detected rectangle from lines at ("
+                              << rect.x << ", " << rect.y
+                              << ") size: " << rect.width << "x" << rect.height
+                              << std::endl;
+                  }
+                }
+              }
+            }
+          }
+        }
+
         // Filter out lines that are part of rectangles
         std::vector<PDFLine> filteredLines;
         const double tolerance =
@@ -2471,12 +2638,6 @@ OCRAnalysis::PNGRenderResult OCRAnalysis::renderElementsToPNG(
 
     if (boundsMode == RenderBoundsMode::USE_LARGEST_RECTANGLE) {
       // Use the largest rectangle to determine bounds
-      if (elements.rectangles.empty()) {
-        result.errorMessage =
-            "No rectangles found for USE_LARGEST_RECTANGLE mode";
-        return result;
-      }
-
       // Find the largest rectangle by area
       double largestArea = 0;
       const PDFRectangle *largestRect = nullptr;
@@ -2490,20 +2651,74 @@ OCRAnalysis::PNGRenderResult OCRAnalysis::renderElementsToPNG(
       }
 
       if (largestRect == nullptr) {
-        result.errorMessage = "Could not find valid rectangle";
-        return result;
+        // No rectangles found - try to use largest image instead
+        std::cerr << "DEBUG: No rectangles found, checking for images..."
+                  << std::endl;
+
+        if (!elements.images.empty()) {
+          // Find the largest image by area
+          double largestImageArea = 0.0;
+          const PDFEmbeddedImage *largestImage = nullptr;
+
+          for (const auto &img : elements.images) {
+            double area = img.displayWidth * img.displayHeight;
+            if (area > largestImageArea) {
+              largestImageArea = area;
+              largestImage = &img;
+            }
+          }
+
+          if (largestImage != nullptr) {
+            minX = largestImage->x;
+            minY = largestImage->y;
+            maxX = largestImage->x + largestImage->displayWidth;
+            maxY = largestImage->y + largestImage->displayHeight;
+
+            std::cerr << "DEBUG: Using largest image bounds: (" << minX << ", "
+                      << minY << ") to (" << maxX << ", " << maxY << ")"
+                      << " (area: " << largestImageArea << ")" << std::endl;
+          } else {
+            result.errorMessage = "Could not find valid rectangle or image";
+            return result;
+          }
+        } else {
+          result.errorMessage =
+              "No rectangles or images found for USE_LARGEST_RECTANGLE mode";
+          return result;
+        }
+      } else {
+        // Use only the rectangle bounds - do not expand
+        // Rectangle coords are in top-left origin (from OutputDev with
+        // upsideDown()=false). Text coords are in bottom-left origin (flipped
+        // in extractTextFromPDF via: y = pageHeight - bbox.y - bbox.height).
+        // Convert rectangle to bottom-left to match text coordinate system.
+        double rectTopLeftY = largestRect->y;
+        double rectBottomLeftY = rectTopLeftY + largestRect->height;
+
+        minX = largestRect->x;
+        minY = elements.pageHeight - rectBottomLeftY; // Convert to bottom-left
+        maxX = largestRect->x + largestRect->width;
+        maxY = elements.pageHeight - rectTopLeftY; // Convert to bottom-left
+
+        std::cerr << "DEBUG: Found " << elements.rectangles.size()
+                  << " rectangle(s)" << std::endl;
+        for (size_t i = 0; i < elements.rectangles.size(); i++) {
+          const auto &rect = elements.rectangles[i];
+          double area = rect.width * rect.height;
+          std::cerr << "  Rectangle " << i << ": (" << rect.x << ", " << rect.y
+                    << ") size: " << rect.width << "x" << rect.height
+                    << " area: " << area << std::endl;
+        }
+
+        std::cerr << "DEBUG: Rectangle top-left coords: (" << largestRect->x
+                  << ", " << largestRect->y << ") to ("
+                  << largestRect->x + largestRect->width << ", "
+                  << largestRect->y + largestRect->height << ")" << std::endl;
+        std::cerr << "DEBUG: Converted to bottom-left coords (no expansion): ("
+                  << minX << ", " << minY << ") to (" << maxX << ", " << maxY
+                  << ")"
+                  << " (area: " << largestArea << ")" << std::endl;
       }
-
-      // Use only the rectangle bounds - do not expand
-      minX = largestRect->x;
-      minY = largestRect->y;
-      maxX = largestRect->x + largestRect->width;
-      maxY = largestRect->y + largestRect->height;
-
-      std::cerr << "DEBUG: Using largest rectangle bounds (no expansion): ("
-                << minX << ", " << minY << ") to (" << maxX << ", " << maxY
-                << ")"
-                << " (area: " << largestArea << ")" << std::endl;
 
     } else if (elements.linesBoundingBoxWidth > 0 &&
                elements.linesBoundingBoxHeight > 0) {
@@ -2674,6 +2889,83 @@ OCRAnalysis::PNGRenderResult OCRAnalysis::renderElementsToPNG(
 
     std::cerr << "DEBUG: Using crop box from crop marks: (" << minX << ", "
               << minY << ") to (" << maxX << ", " << maxY << ")" << std::endl;
+
+    // If there's no text in the PDF but there are images, perform OCR on the
+    // images
+    std::vector<TextRegion> ocrTextLines;
+    if (elements.textLines.empty() && !elements.images.empty()) {
+      std::cerr
+          << "DEBUG: No text found in PDF, performing OCR on embedded images..."
+          << std::endl;
+
+      // Initialize OCR engine if not already initialized
+      if (!m_initialized) {
+        std::cerr << "DEBUG: Initializing OCR engine..." << std::endl;
+        if (!initialize()) {
+          std::cerr << "DEBUG: Failed to initialize OCR engine, skipping OCR"
+                    << std::endl;
+        }
+      }
+
+      // Only proceed with OCR if engine is initialized
+      if (m_initialized) {
+        for (const auto &pdfImage : elements.images) {
+          if (pdfImage.image.empty()) {
+            continue;
+          }
+
+          // Perform OCR on the image
+          std::cerr << "DEBUG: Performing OCR on image " << pdfImage.image.cols
+                    << "x" << pdfImage.image.rows << " pixels..." << std::endl;
+          OCRResult ocrResult = analyzeImage(pdfImage.image);
+
+          if (!ocrResult.success) {
+            std::cerr << "DEBUG: OCR failed: " << ocrResult.errorMessage
+                      << std::endl;
+          } else if (ocrResult.regions.empty()) {
+            std::cerr << "DEBUG: OCR succeeded but found no text regions"
+                      << std::endl;
+          } else {
+            std::cerr << "DEBUG: OCR found " << ocrResult.regions.size()
+                      << " text regions in image at (" << pdfImage.x << ", "
+                      << pdfImage.y << ")" << std::endl;
+
+            // Convert OCR results to PDF coordinates
+            // OCR coordinates are in pixels relative to the image
+            // We need to convert them to PDF points relative to the page
+
+            // Calculate scale factor from image pixels to PDF points
+            double scaleX = pdfImage.displayWidth / pdfImage.image.cols;
+            double scaleY = pdfImage.displayHeight / pdfImage.image.rows;
+
+            for (const auto &region : ocrResult.regions) {
+              TextRegion textRegion;
+              textRegion.text = region.text;
+              textRegion.confidence = region.confidence;
+              textRegion.orientation = region.orientation;
+
+              // Convert pixel coordinates to PDF points
+              // Note: OCR uses top-left origin, PDF images use bottom-left
+              // origin
+              textRegion.boundingBox.x =
+                  pdfImage.x + (region.boundingBox.x * scaleX);
+              textRegion.boundingBox.y =
+                  pdfImage.y + (region.boundingBox.y * scaleY);
+              textRegion.boundingBox.width = region.boundingBox.width * scaleX;
+              textRegion.boundingBox.height =
+                  region.boundingBox.height * scaleY;
+
+              ocrTextLines.push_back(textRegion);
+            }
+          }
+        }
+
+        if (!ocrTextLines.empty()) {
+          std::cerr << "DEBUG: Total OCR text regions extracted: "
+                    << ocrTextLines.size() << std::endl;
+        }
+      } // end if (m_initialized)
+    } // end if (elements.textLines.empty() && !elements.images.empty())
 
     // Use crop box dimensions for image size
     const double margin = 0.0;
@@ -2863,7 +3155,8 @@ OCRAnalysis::PNGRenderResult OCRAnalysis::renderElementsToPNG(
         if (is90DegRotation) {
           // For 90-degree rotation:
           // The AABB position (x,y) and dimensions (displayWidth,
-          // displayHeight) are correct But we need to rotate the image content
+          // displayHeight) are correct But we need to rotate the image
+          // content
 
           cairo_translate(cr, x, y);
 
@@ -2963,6 +3256,11 @@ OCRAnalysis::PNGRenderResult OCRAnalysis::renderElementsToPNG(
       // the rectangle is rendered
       if (textLeft < minX || textRight > maxX || textTop < minY ||
           textBottom > maxY) {
+        std::cerr << "DEBUG: Filtering out text \"" << text.text.substr(0, 20)
+                  << "\" at (" << textLeft << "," << textTop << ") to ("
+                  << textRight << "," << textBottom << "), bounds: (" << minX
+                  << "," << minY << ") to (" << maxX << "," << maxY << ")"
+                  << std::endl;
         continue;
       }
 
@@ -2981,7 +3279,10 @@ OCRAnalysis::PNGRenderResult OCRAnalysis::renderElementsToPNG(
 
       // Set font based on text region properties
       std::string fontFamily = text.fontName.empty() ? "Sans" : text.fontName;
-      double fontSize = (text.fontSize > 0) ? text.fontSize : 10.0;
+      // Scale font size down - bounding box height includes
+      // ascenders/descenders so it's larger than the actual font size. Use 0.75
+      // as a scaling factor.
+      double fontSize = (text.fontSize > 0) ? (text.fontSize * 0.75) : 10.0;
 
       // Determine Cairo font slant
       cairo_font_slant_t slant =
@@ -3012,6 +3313,53 @@ OCRAnalysis::PNGRenderResult OCRAnalysis::renderElementsToPNG(
       result.elements.push_back(elem);
     }
 
+    // Draw OCR text from images (if any)
+    for (const auto &text : ocrTextLines) {
+      // Skip if text is outside the content area
+      double textLeft = text.boundingBox.x;
+      double textTop = text.boundingBox.y;
+      double textRight = text.boundingBox.x + text.boundingBox.width;
+      double textBottom = text.boundingBox.y + text.boundingBox.height;
+
+      if (textLeft < minX || textRight > maxX || textTop < minY ||
+          textBottom > maxY) {
+        continue;
+      }
+
+      double x = text.boundingBox.x - minX + margin;
+      // Convert from PDF bottom-left to Cairo top-left
+      double y = pageHeightPt - (text.boundingBox.y - minY) - margin;
+
+      std::cerr << "DEBUG: Rendering OCR text at (" << x << ", " << y
+                << "), text: \"" << text.text.substr(0, 20) << "\""
+                << std::endl;
+
+      // Use default font for OCR text
+      std::string fontFamily = "Sans";
+      double fontSize = 10.0;
+
+      cairo_select_font_face(cr, fontFamily.c_str(), CAIRO_FONT_SLANT_NORMAL,
+                             CAIRO_FONT_WEIGHT_NORMAL);
+      cairo_set_font_size(cr, fontSize);
+
+      cairo_move_to(cr, x, y);
+      cairo_show_text(cr, text.text.c_str());
+
+      // Add to result
+      RenderedElement elem;
+      elem.type = RenderedElement::TEXT;
+      elem.pixelX = static_cast<int>(x * scale);
+      elem.pixelY = static_cast<int>(y * scale);
+      elem.pixelWidth = static_cast<int>(text.boundingBox.width * scale);
+      elem.pixelHeight = static_cast<int>(text.boundingBox.height * scale);
+      elem.text = text.text;
+      elem.fontName = fontFamily;
+      elem.fontSize = fontSize;
+      elem.isBold = false;
+      elem.isItalic = false;
+      result.elements.push_back(elem);
+    }
+
     // Write to PNG
     cairo_surface_write_to_png(surface, outputPath.c_str());
 
@@ -3033,6 +3381,25 @@ OCRAnalysis::PNGRenderResult OCRAnalysis::renderElementsToPNG(
     result.errorMessage = std::string("Error rendering PNG: ") + e.what();
     return result;
   }
+}
+
+void OCRAnalysis::sortByPosition(PNGRenderResult &result) {
+  // Sort elements by position: top to bottom, left to right
+  // Elements on the same horizontal line (similar Y) are sorted by X
+  std::sort(result.elements.begin(), result.elements.end(),
+            [](const RenderedElement &a, const RenderedElement &b) {
+              // Define tolerance for "same line" - elements within this Y
+              // difference are considered on the same horizontal line
+              const int Y_TOLERANCE = 5; // pixels
+
+              // If Y positions are similar (within tolerance), sort by X
+              if (std::abs(a.pixelY - b.pixelY) <= Y_TOLERANCE) {
+                return a.pixelX < b.pixelX;
+              }
+
+              // Otherwise, sort by Y (top to bottom)
+              return a.pixelY < b.pixelY;
+            });
 }
 
 OCRAnalysis::PDFElements
@@ -3309,8 +3676,8 @@ OCRAnalysis::stripBleedMarks(const std::string &pdfPath) {
                              (y1 - y2) * (x3 * y4 - y3 * x4)) /
                             denom;
 
-        // For crop marks, use the closest endpoints to avoid extending too far
-        // Determine which line is horizontal and which is vertical
+        // For crop marks, use the closest endpoints to avoid extending too
+        // far Determine which line is horizontal and which is vertical
         bool line1IsHorizontal = std::abs(y2 - y1) < std::abs(x2 - x1);
 
         double cropX, cropY;
@@ -3328,8 +3695,8 @@ OCRAnalysis::stripBleedMarks(const std::string &pdfPath) {
             // vertical
             cropY = (std::abs(y3 - horizY) < std::abs(y4 - horizY)) ? y3 : y4;
           } else if (vertMinY > horizY) {
-            // Vertical line is entirely above horizontal (top crop mark) - use
-            // horizontal Y
+            // Vertical line is entirely above horizontal (top crop mark) -
+            // use horizontal Y
             cropY = horizY;
           } else {
             // Vertical line is entirely below horizontal (bottom crop mark) -
@@ -3350,8 +3717,8 @@ OCRAnalysis::stripBleedMarks(const std::string &pdfPath) {
             // vertical
             cropY = (std::abs(y1 - horizY) < std::abs(y2 - horizY)) ? y1 : y2;
           } else if (vertMinY > horizY) {
-            // Vertical line is entirely above horizontal (top crop mark) - use
-            // horizontal Y
+            // Vertical line is entirely above horizontal (top crop mark) -
+            // use horizontal Y
             cropY = horizY;
           } else {
             // Vertical line is entirely below horizontal (bottom crop mark) -
@@ -3489,7 +3856,8 @@ OCRAnalysis::stripBleedMarks(const std::string &pdfPath) {
     result.pageWidth = cropWidth;
     result.pageHeight = cropHeight;
 
-    // Also update linesBoundingBox to match crop box (for renderElementsToPNG)
+    // Also update linesBoundingBox to match crop box (for
+    // renderElementsToPNG)
     result.linesBoundingBoxX = cropMinX;
     result.linesBoundingBoxY = cropMinY;
     result.linesBoundingBoxWidth = cropWidth;
