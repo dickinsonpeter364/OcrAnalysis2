@@ -7,34 +7,76 @@
 int main(int argc, char *argv[]) {
   if (argc < 2) {
     std::cerr << "Usage: " << argv[0]
-              << " <pdf_file> [output_dir] [dpi] [bounds_mode] [mark_to_file]"
+              << " <pdf_file> [dpi] [bounds_mode] [output_dir] [mark_to_file]"
               << std::endl;
+    std::cerr << "  dpi: resolution (default: 300)" << std::endl;
     std::cerr << "  bounds_mode: 'crop' (default) or 'rect'" << std::endl;
+    std::cerr << "  output_dir: directory for output (default: 'images')"
+              << std::endl;
     std::cerr
         << "  mark_to_file: optional image file to mark with element boxes"
         << std::endl;
+    std::cerr << "\nExamples:" << std::endl;
+    std::cerr << "  " << argv[0] << " document.pdf" << std::endl;
+    std::cerr << "  " << argv[0] << " document.pdf 1200 rect" << std::endl;
+    std::cerr << "  " << argv[0]
+              << " document.pdf 1200 rect images rendered.png" << std::endl;
     return 1;
   }
 
-  std::string pdfPath = argv[1];
-  std::string outputDir = (argc > 2) ? argv[2] : "images";
-  double dpi = (argc > 3) ? std::stod(argv[3]) : 300.0;
-
-  // Parse bounds mode
-  ocr::OCRAnalysis::RenderBoundsMode boundsMode =
-      ocr::OCRAnalysis::RenderBoundsMode::USE_CROP_MARKS;
-  if (argc > 4) {
-    std::string modeStr = argv[4];
-    std::transform(modeStr.begin(), modeStr.end(), modeStr.begin(), ::tolower);
-    if (modeStr == "rect" || modeStr == "rectangle") {
-      boundsMode = ocr::OCRAnalysis::RenderBoundsMode::USE_LARGEST_RECTANGLE;
-    }
-  }
-
-  // Optional mark to file parameter
-  std::string markToFile = (argc > 5) ? argv[5] : "";
-
   try {
+    std::string pdfPath = argv[1];
+    double dpi = 300.0;
+    std::string outputDir = "images";
+    ocr::OCRAnalysis::RenderBoundsMode boundsMode =
+        ocr::OCRAnalysis::RenderBoundsMode::USE_CROP_MARKS;
+    std::string markToFile = "";
+
+    // Parse remaining arguments flexibly
+    for (int i = 2; i < argc; i++) {
+      std::string arg = argv[i];
+      std::string argLower = arg;
+      std::transform(argLower.begin(), argLower.end(), argLower.begin(),
+                     ::tolower);
+
+      // Check if it's a bounds mode
+      if (argLower == "crop" || argLower == "rect" || argLower == "rectangle") {
+        if (argLower == "rect" || argLower == "rectangle") {
+          boundsMode =
+              ocr::OCRAnalysis::RenderBoundsMode::USE_LARGEST_RECTANGLE;
+        }
+      }
+      // Check if it's a number (DPI)
+      else if (arg.find_first_not_of("0123456789.") == std::string::npos) {
+        try {
+          dpi = std::stod(arg);
+        } catch (...) {
+          std::cerr << "Warning: Could not parse DPI value '" << arg
+                    << "', using default 300" << std::endl;
+        }
+      }
+      // Check if it's a file path (contains . or / or \)
+      else if (arg.find('.') != std::string::npos ||
+               arg.find('/') != std::string::npos ||
+               arg.find('\\') != std::string::npos) {
+        // If we haven't set markToFile yet and this looks like an image, use it
+        if (markToFile.empty() &&
+            (argLower.ends_with(".png") || argLower.ends_with(".jpg") ||
+             argLower.ends_with(".jpeg"))) {
+          markToFile = arg;
+        } else if (outputDir == "images") {
+          // Otherwise it might be an output directory
+          outputDir = arg;
+        } else {
+          markToFile = arg;
+        }
+      }
+      // Otherwise assume it's an output directory
+      else {
+        outputDir = arg;
+      }
+    }
+
     ocr::OCRAnalysis analyzer;
 
     // Extract PDF elements (without stripping bleed marks)
