@@ -463,19 +463,59 @@ public:
    * - Text elements use top-left origin (from Poppler)
    * - Output PNG uses top-left origin
    *
+   * Optionally, if markToFile is provided, loads that image file and draws
+   * unfilled bounding boxes over it to visualize where elements are mapped,
+   * saving the result with a "_marked" suffix.
+   *
    * @param elements The extracted PDF elements to render
    * @param pdfPath Original PDF path (used for output filename)
    * @param dpi Resolution in dots per inch (default: 300)
    * @param outputDir Directory to save the PNG (default: "images")
    * @param boundsMode Mode for determining rendering bounds (default:
    * USE_CROP_MARKS)
+   * @param markToFile Optional path to an image file to mark with element
+   * bounding boxes (default: empty string = no marking)
    * @return PNGRenderResult containing success status, output path, and pixel
    * coordinates
    */
   PNGRenderResult renderElementsToPNG(
       const PDFElements &elements, const std::string &pdfPath,
       double dpi = 300.0, const std::string &outputDir = "images",
-      RenderBoundsMode boundsMode = RenderBoundsMode::USE_CROP_MARKS);
+      RenderBoundsMode boundsMode = RenderBoundsMode::USE_CROP_MARKS,
+      const std::string &markToFile = "");
+
+  /**
+   * @brief Sort rendered elements by position (top to bottom, left to right)
+   *
+   * Sorts the elements vector in a PNGRenderResult by their position,
+   * ordered from top to bottom, then left to right (assuming origin at
+   * top-left). Elements on the same horizontal line (similar Y coordinates) are
+   * sorted by X coordinate. This is useful for reading order processing.
+   *
+   * @param result Reference to PNGRenderResult whose elements will be sorted
+   */
+  static void sortByPosition(PNGRenderResult &result);
+
+  /**
+   * @brief Align elements using OCR and create marked image with adjusted boxes
+   *
+   * Uses Tesseract OCR to locate the first text element in the rendered image,
+   * calculates the offset between the expected position and OCR-detected
+   * position, adjusts all element positions by this offset, verifies alignment
+   * with OCR, and creates a marked image on the original image with blue
+   * bounding boxes showing the adjusted positions.
+   *
+   * @param renderedImagePath Path to the rendered image to analyze with OCR
+   * @param originalImagePath Path to the original image to mark up with boxes
+   * @param renderResult The render result containing element positions
+   * @param outputPath Path where the marked image with adjusted boxes will be
+   * saved
+   * @return true if successful, false otherwise
+   */
+  bool alignAndMarkElements(const std::string &renderedImagePath,
+                            const std::string &originalImagePath,
+                            const PNGRenderResult &renderResult,
+                            const std::string &outputPath);
 
   /**
    * @brief Get text from a specific region of an image

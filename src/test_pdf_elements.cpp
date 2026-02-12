@@ -82,8 +82,7 @@ int main(int argc, char *argv[]) {
 
   // Extract all elements
   std::cout << "Extracting all elements from PDF..." << std::endl;
-  ocr::OCRAnalysis::PDFElements elements =
-      analyzer.extractPDFElements(pdfPath, 5.0, 5.0, applyCropFilter);
+  ocr::OCRAnalysis::PDFElements elements = analyzer.extractPDFElements(pdfPath);
 
   if (!elements.success) {
     std::cerr << "Failed to extract elements: " << elements.errorMessage
@@ -91,18 +90,11 @@ int main(int argc, char *argv[]) {
     return 1;
   }
 
-  // Render elements if requested
+  // Note: Rendering to PDF is not currently supported
+  // The renderElementsToPDF function has been removed
   if (!renderOutputPath.empty()) {
-    std::cout << std::endl << "Rendering elements to file..." << std::endl;
-    bool renderSuccess =
-        analyzer.renderElementsToPDF(elements, renderOutputPath);
-    if (renderSuccess) {
-      std::cout << "Successfully rendered elements to: " << renderOutputPath
-                << std::endl;
-    } else {
-      std::cerr << "Failed to render elements" << std::endl;
-    }
-    std::cout << std::endl;
+    std::cerr << "Warning: PDF rendering is not currently supported"
+              << std::endl;
   }
 
   // Summary
@@ -136,29 +128,18 @@ int main(int argc, char *argv[]) {
   // Crop mark detection info
   std::cout << std::endl << "=== CROP MARK DETECTION ===" << std::endl;
   std::cout << std::string(60, '-') << std::endl;
-  if (elements.cropMarkInfo.detected) {
-    std::cout << "Crop marks DETECTED!" << std::endl;
-    std::cout << "  Number of crop marks: "
-              << elements.cropMarkInfo.cropMarks.size() << std::endl;
-    std::cout << "  Crop box position: (" << std::fixed << std::setprecision(1)
-              << elements.cropMarkInfo.cropBoxX << ", "
-              << elements.cropMarkInfo.cropBoxY << ")" << std::endl;
-    std::cout << "  Crop box dimensions: " << elements.cropMarkInfo.cropBoxWidth
-              << " x " << elements.cropMarkInfo.cropBoxHeight << " points"
-              << std::endl;
-    if (applyCropFilter) {
-      std::cout
-          << "  NOTE: All extracted elements have been filtered to only include"
-          << std::endl;
-      std::cout << "        items within the crop box area." << std::endl;
-    } else {
-      std::cout << "  NOTE: Filtering DISABLED - showing ALL elements "
-                   "(including those"
-                << std::endl;
-      std::cout << "        outside the crop box)." << std::endl;
-    }
+  // Note: Detailed crop mark info is no longer available in PDFElements
+  // The linesBoundingBox fields contain the calculated interior box
+  if (elements.linesBoundingBoxWidth > 0 &&
+      elements.linesBoundingBoxHeight > 0) {
+    std::cout << "Interior bounding box detected from lines:" << std::endl;
+    std::cout << "  Position: (" << std::fixed << std::setprecision(1)
+              << elements.linesBoundingBoxX << ", "
+              << elements.linesBoundingBoxY << ")" << std::endl;
+    std::cout << "  Dimensions: " << elements.linesBoundingBoxWidth << " x "
+              << elements.linesBoundingBoxHeight << " points" << std::endl;
   } else {
-    std::cout << "No crop marks detected - showing all elements" << std::endl;
+    std::cout << "No interior bounding box detected" << std::endl;
   }
   std::cout << std::string(60, '-') << std::endl;
 

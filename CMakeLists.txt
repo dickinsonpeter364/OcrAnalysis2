@@ -213,6 +213,16 @@ target_link_libraries(test_bounds_modes
         ocr_analysis
 )
 
+# Define the sort elements test executable
+add_executable(test_sort_elements
+    src/test_sort_elements.cpp
+)
+
+target_link_libraries(test_sort_elements
+    PRIVATE
+        ocr_analysis
+)
+
 # Optional: Install targets
 install(TARGETS ocr_analysis ocr_demo
     LIBRARY DESTINATION lib

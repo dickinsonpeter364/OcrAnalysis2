@@ -2626,7 +2626,8 @@ int OCRAnalysis::findBestRotation(const cv::Mat &image) {
 
 OCRAnalysis::PNGRenderResult OCRAnalysis::renderElementsToPNG(
     const PDFElements &elements, const std::string &pdfPath, double dpi,
-    const std::string &outputDir, RenderBoundsMode boundsMode) {
+    const std::string &outputDir, RenderBoundsMode boundsMode,
+    const std::string &markToFile) {
 
   PNGRenderResult result;
 
@@ -3369,6 +3370,67 @@ OCRAnalysis::PNGRenderResult OCRAnalysis::renderElementsToPNG(
     std::cerr << "PNG rendered successfully: " << outputPath << std::endl;
     std::cerr << "  Total elements: " << result.elements.size() << std::endl;
 
+    // If markToFile is provided, create a marked version showing element boxes
+    if (!markToFile.empty()) {
+      try {
+        // Load the image file
+        cv::Mat markedImage = cv::imread(markToFile, cv::IMREAD_COLOR);
+
+        if (markedImage.empty()) {
+          std::cerr << "WARNING: Could not load image file for marking: "
+                    << markToFile << std::endl;
+        } else {
+          // Draw bounding boxes for all elements
+          for (const auto &elem : result.elements) {
+            cv::Scalar color;
+
+            // Use different colors for different element types
+            switch (elem.type) {
+            case RenderedElement::TEXT:
+              color = cv::Scalar(0, 255, 0); // Green for text
+              break;
+            case RenderedElement::IMAGE:
+              color = cv::Scalar(255, 0, 0); // Blue for images
+              break;
+            case RenderedElement::RECTANGLE:
+              color = cv::Scalar(0, 0, 255); // Red for rectangles
+              break;
+            case RenderedElement::LINE:
+              color = cv::Scalar(0, 255, 255); // Yellow for lines
+              break;
+            default:
+              color = cv::Scalar(128, 128, 128); // Gray for unknown
+              break;
+            }
+
+            // Draw unfilled rectangle
+            cv::rectangle(markedImage, cv::Point(elem.pixelX, elem.pixelY),
+                          cv::Point(elem.pixelX + elem.pixelWidth,
+                                    elem.pixelY + elem.pixelHeight),
+                          color, 2); // 2 pixel thickness
+          }
+
+          // Generate output filename with "_marked" suffix
+          std::filesystem::path inputPath(markToFile);
+          std::string stem = inputPath.stem().string();
+          std::string extension = inputPath.extension().string();
+          std::string markedPath = inputPath.parent_path().string() + "/" +
+                                   stem + "_marked" + extension;
+
+          // Save the marked image
+          if (cv::imwrite(markedPath, markedImage)) {
+            std::cerr << "Marked image saved: " << markedPath << std::endl;
+          } else {
+            std::cerr << "WARNING: Failed to save marked image: " << markedPath
+                      << std::endl;
+          }
+        }
+      } catch (const std::exception &e) {
+        std::cerr << "WARNING: Error creating marked image: " << e.what()
+                  << std::endl;
+      }
+    }
+
     result.success = true;
     return result;
 
@@ -3400,6 +3462,321 @@ void OCRAnalysis::sortByPosition(PNGRenderResult &result) {
               // Otherwise, sort by Y (top to bottom)
               return a.pixelY < b.pixelY;
             });
+}
+
+bool OCRAnalysis::alignAndMarkElements(const std::string &renderedImagePath,
+                                       const std::string &originalImagePath,
+                                       const PNGRenderResult &renderResult,
+                                       const std::string &outputPath) {
+  try {
+    // Load the original image for OCR analysis and marking
+    cv::Mat originalImage = cv::imread(originalImagePath, cv::IMREAD_COLOR);
+    if (originalImage.empty()) {
+      std::cerr << "ERROR: Could not load original image: " << originalImagePath
+                << std::endl;
+      return false;
+    }
+
+    // Find the first text element in the render result
+    const RenderedElement *firstTextElement = nullptr;
+    for (const auto &elem : renderResult.elements) {
+      if (elem.type == RenderedElement::TEXT && !elem.text.empty()) {
+        firstTextElement = &elem;
+        break;
+      }
+    }
+
+    if (!firstTextElement) {
+      std::cerr << "ERROR: No text elements found in render result"
+                << std::endl;
+      return false;
+    }
+
+    std::cerr << "First text element: \"" << firstTextElement->text << "\" at ("
+              << firstTextElement->pixelX << ", " << firstTextElement->pixelY
+              << ")" << std::endl;
+
+    // Use Tesseract OCR on the original image in WORD mode
+    tesseract::TessBaseAPI *ocr = new tesseract::TessBaseAPI();
+    // Try to initialize with explicit tessdata path first, then fall back to
+    // default
+    if (ocr->Init("C:/tessdata/tessdata", "eng") != 0 &&
+        ocr->Init(NULL, "eng") != 0) {
+      std::cerr << "ERROR: Could not initialize Tesseract" << std::endl;
+      std::cerr << "Tried paths: C:/tessdata/tessdata and default" << std::endl;
+      delete ocr;
+      return false;
+    }
+
+    // Set image to the ORIGINAL image (not rendered)
+    ocr->SetImage(originalImage.data, originalImage.cols, originalImage.rows, 3,
+                  originalImage.step);
+    ocr->SetPageSegMode(tesseract::PSM_SINGLE_BLOCK); // WORD mode for detecting
+                                                      // individual words
+
+    // Get word-level bounding boxes from OCR and store them
+    ocr->Recognize(0);
+    tesseract::ResultIterator *ri = ocr->GetIterator();
+
+    // Store all OCR word boxes with their text
+    struct OcrBox {
+      int x, y, width, height;
+      std::string text;
+    };
+    std::vector<OcrBox> ocrBoxes;
+
+    if (ri != nullptr) {
+      do {
+        const char *word = ri->GetUTF8Text(tesseract::RIL_WORD);
+        if (word != nullptr) {
+          int x1, y1, x2, y2;
+          ri->BoundingBox(tesseract::RIL_WORD, &x1, &y1, &x2, &y2);
+
+          // Clean up the text for matching
+          std::string wordStr(word);
+          std::string cleanText = wordStr;
+          cleanText.erase(
+              std::remove_if(cleanText.begin(), cleanText.end(),
+                             [](unsigned char c) { return std::isspace(c); }),
+              cleanText.end());
+          std::transform(cleanText.begin(), cleanText.end(), cleanText.begin(),
+                         [](unsigned char c) { return std::tolower(c); });
+
+          ocrBoxes.push_back({x1, y1, x2 - x1, y2 - y1, cleanText});
+          delete[] word;
+        }
+      } while (ri->Next(tesseract::RIL_WORD));
+      delete ri;
+    }
+
+    ocr->End();
+    delete ocr;
+
+    if (ocrBoxes.empty()) {
+      std::cerr << "WARNING: Could not find any OCR words in the original image"
+                << std::endl;
+      std::cerr << "Creating marked image without alignment adjustment"
+                << std::endl;
+    } else {
+      std::cerr << "Found " << ocrBoxes.size()
+                << " OCR word boxes for alignment" << std::endl;
+    }
+
+    // Group elements by font size and calculate offset for each group
+    struct FontSizeData {
+      int offsetX, offsetY, width, height;
+    };
+    std::map<double, FontSizeData> fontSizeOffsets;
+
+    if (!ocrBoxes.empty()) {
+      // Collect unique font sizes
+      std::set<double> fontSizes;
+      for (const auto &elem : renderResult.elements) {
+        if (elem.type == RenderedElement::TEXT && !elem.text.empty()) {
+          fontSizes.insert(elem.fontSize);
+        }
+      }
+
+      std::cerr << "Found " << fontSizes.size() << " unique font sizes"
+                << std::endl;
+
+      // For each font size, find a representative element and calculate offset
+      // using ROI
+      for (double fontSize : fontSizes) {
+        // Find first element with this font size as representative
+        const RenderedElement *representative = nullptr;
+        for (const auto &elem : renderResult.elements) {
+          if (elem.type == RenderedElement::TEXT && !elem.text.empty() &&
+              elem.fontSize == fontSize) {
+            representative = &elem;
+            break;
+          }
+        }
+
+        if (!representative)
+          continue;
+
+        // Define search region around the expected position
+        const int SEARCH_RADIUS = 150; // pixels to search in each direction
+        int roiX = std::max(0, representative->pixelX - SEARCH_RADIUS);
+        int roiY = std::max(0, representative->pixelY - SEARCH_RADIUS);
+        int roiWidth = std::min(SEARCH_RADIUS * 2 + representative->pixelWidth,
+                                originalImage.cols - roiX);
+        int roiHeight =
+            std::min(SEARCH_RADIUS * 2 + representative->pixelHeight,
+                     originalImage.rows - roiY);
+
+        // Skip if ROI is invalid
+        if (roiWidth <= 0 || roiHeight <= 0)
+          continue;
+
+        cv::Rect roiRect(roiX, roiY, roiWidth, roiHeight);
+        cv::Mat roi = originalImage(roiRect);
+
+        // Run OCR on this ROI
+        tesseract::TessBaseAPI *roiOcr = new tesseract::TessBaseAPI();
+        if (roiOcr->Init("C:/tessdata/tessdata", "eng") != 0 &&
+            roiOcr->Init(NULL, "eng") != 0) {
+          delete roiOcr;
+          continue;
+        }
+
+        roiOcr->SetImage(roi.data, roi.cols, roi.rows, 3, roi.step);
+        roiOcr->SetPageSegMode(tesseract::PSM_SINGLE_BLOCK);
+        roiOcr->Recognize(0);
+
+        // Clean representative text for matching
+        std::string repText = representative->text;
+        repText.erase(
+            std::remove_if(repText.begin(), repText.end(),
+                           [](unsigned char c) { return std::isspace(c); }),
+            repText.end());
+        std::transform(repText.begin(), repText.end(), repText.begin(),
+                       [](unsigned char c) { return std::tolower(c); });
+
+        // Find matching text in ROI
+        tesseract::ResultIterator *roiRi = roiOcr->GetIterator();
+        int bestOffsetX = 0;
+        int bestOffsetY = 0;
+        int bestOcrWidth = 0;
+        int bestOcrHeight = 0;
+        double bestDistance = std::numeric_limits<double>::max();
+        bool foundMatch = false;
+
+        if (roiRi != nullptr) {
+          do {
+            const char *word = roiRi->GetUTF8Text(tesseract::RIL_WORD);
+            if (word != nullptr) {
+              std::string wordStr(word);
+              std::string cleanWord = wordStr;
+              cleanWord.erase(std::remove_if(cleanWord.begin(), cleanWord.end(),
+                                             [](unsigned char c) {
+                                               return std::isspace(c);
+                                             }),
+                              cleanWord.end());
+              std::transform(cleanWord.begin(), cleanWord.end(),
+                             cleanWord.begin(),
+                             [](unsigned char c) { return std::tolower(c); });
+
+              // Check if text matches
+              bool textMatches =
+                  (cleanWord == repText) ||
+                  (cleanWord.find(repText) != std::string::npos) ||
+                  (repText.find(cleanWord) != std::string::npos);
+
+              if (textMatches) {
+                int x1, y1, x2, y2;
+                roiRi->BoundingBox(tesseract::RIL_WORD, &x1, &y1, &x2, &y2);
+
+                // Convert ROI coordinates to original image coordinates
+                int absX = roiX + x1;
+                int absY = roiY + y1;
+
+                double dx = absX - representative->pixelX;
+                double dy = absY - representative->pixelY;
+                double distance = std::sqrt(dx * dx + dy * dy);
+
+                if (distance < bestDistance) {
+                  bestDistance = distance;
+                  bestOffsetX = absX - representative->pixelX;
+                  bestOffsetY = absY - representative->pixelY;
+                  bestOcrWidth = x2 - x1;
+                  bestOcrHeight = y2 - y1;
+                  foundMatch = true;
+                }
+              }
+
+              delete[] word;
+            }
+          } while (roiRi->Next(tesseract::RIL_WORD));
+          delete roiRi;
+        }
+
+        roiOcr->End();
+        delete roiOcr;
+
+        if (foundMatch) {
+          fontSizeOffsets[fontSize] = {bestOffsetX, bestOffsetY, bestOcrWidth,
+                                       bestOcrHeight};
+          std::cerr << "Font size " << fontSize << "pt: offset (" << bestOffsetX
+                    << ", " << bestOffsetY << "), OCR size: " << bestOcrWidth
+                    << "x" << bestOcrHeight << ", distance: " << bestDistance
+                    << " (ROI search)" << std::endl;
+        } else {
+          // No match found in ROI, use zero offset and original size
+          fontSizeOffsets[fontSize] = {0, 0, -1,
+                                       -1}; // -1 means use original size
+          std::cerr << "Font size " << fontSize
+                    << "pt: no match in ROI, using zero offset" << std::endl;
+        }
+      }
+    }
+
+    // Create a copy of the original image for marking
+    cv::Mat markedImage = originalImage.clone();
+
+    // Draw adjusted bounding boxes in blue
+    cv::Scalar blueColor(255, 0, 0); // Blue in BGR
+    int drawnCount = 0;
+    int alignedCount = 0;
+
+    for (const auto &elem : renderResult.elements) {
+      // Only process text elements
+      if (elem.type != RenderedElement::TEXT || elem.text.empty()) {
+        continue;
+      }
+
+      int adjustedX = elem.pixelX;
+      int adjustedY = elem.pixelY;
+      int boxWidth = elem.pixelWidth;
+      int boxHeight = elem.pixelHeight;
+
+      // Apply offset and size based on font size
+      auto it = fontSizeOffsets.find(elem.fontSize);
+      if (it != fontSizeOffsets.end()) {
+        adjustedX = elem.pixelX + it->second.offsetX;
+        adjustedY = elem.pixelY + it->second.offsetY;
+        // Use OCR height if available (height > 0), but keep original width
+        // OCR detects entire words which may span multiple elements
+        if (it->second.height > 0) {
+          boxHeight = it->second.height;
+        }
+        alignedCount++;
+      }
+
+      // Clamp coordinates to original image bounds
+      int drawX1 = std::max(0, std::min(adjustedX, originalImage.cols));
+      int drawY1 = std::max(0, std::min(adjustedY, originalImage.rows));
+      int drawX2 =
+          std::max(0, std::min(adjustedX + boxWidth, originalImage.cols));
+      int drawY2 =
+          std::max(0, std::min(adjustedY + boxHeight, originalImage.rows));
+
+      // Only draw if we have a valid rectangle
+      if (drawX2 > drawX1 && drawY2 > drawY1) {
+        cv::rectangle(markedImage, cv::Point(drawX1, drawY1),
+                      cv::Point(drawX2, drawY2), blueColor, 2);
+        drawnCount++;
+      }
+    }
+
+    std::cerr << "Drew " << drawnCount << " boxes (" << alignedCount
+              << " aligned with OCR)" << std::endl;
+
+    // Save the marked image
+    if (cv::imwrite(outputPath, markedImage)) {
+      std::cerr << "Aligned marked image saved: " << outputPath << std::endl;
+      return true;
+    } else {
+      std::cerr << "ERROR: Failed to save aligned marked image: " << outputPath
+                << std::endl;
+      return false;
+    }
+
+  } catch (const std::exception &e) {
+    std::cerr << "ERROR in alignAndMarkElements: " << e.what() << std::endl;
+    return false;
+  }
 }
 
 OCRAnalysis::PDFElements
