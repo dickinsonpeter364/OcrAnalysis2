@@ -3114,7 +3114,9 @@ OCRAnalysis::PNGRenderResult OCRAnalysis::renderElementsToPNG(
     }
 
     // Draw images (PDF bottom-left origin -> convert to top-left)
-    // Only render images within the crop box
+    // DISABLED: Images are often decorative or cause rendering issues
+    // They are still tracked in the elements list but not rendered
+    /*
     for (const auto &img : elements.images) {
       // Clip image to content bounding box
       double imgLeft = std::max(img.x, minX);
@@ -3239,6 +3241,7 @@ OCRAnalysis::PNGRenderResult OCRAnalysis::renderElementsToPNG(
       elem.rotationAngle = img.rotationAngle;
       result.elements.push_back(elem);
     }
+    */
 
     // Draw text (PDF bottom-left origin -> convert to top-left)
     // Only render text within the crop box
