@@ -3718,16 +3718,23 @@ bool OCRAnalysis::alignAndMarkElements(const std::string &renderedImagePath,
         continue;
       }
 
-      int adjustedX = elem.pixelX;
-      int adjustedY = elem.pixelY;
-      int boxWidth = elem.pixelWidth;
-      int boxHeight = elem.pixelHeight;
+      // First, scale element coordinates from rendered space to original image
+      // space
+      int scaledElemX = static_cast<int>(elem.pixelX * scaleX);
+      int scaledElemY = static_cast<int>(elem.pixelY * scaleY);
+      int scaledElemWidth = static_cast<int>(elem.pixelWidth * scaleX);
+      int scaledElemHeight = static_cast<int>(elem.pixelHeight * scaleY);
 
-      // Apply offset and size based on font size
+      // Now apply offset (which is already in original image space)
+      int adjustedX = scaledElemX;
+      int adjustedY = scaledElemY;
+      int boxWidth = scaledElemWidth;
+      int boxHeight = scaledElemHeight;
+
       auto it = fontSizeOffsets.find(elem.fontSize);
       if (it != fontSizeOffsets.end()) {
-        adjustedX = elem.pixelX + it->second.offsetX;
-        adjustedY = elem.pixelY + it->second.offsetY;
+        adjustedX = scaledElemX + it->second.offsetX;
+        adjustedY = scaledElemY + it->second.offsetY;
         // Use OCR height if available (height > 0), but keep original width
         // OCR detects entire words which may span multiple elements
         if (it->second.height > 0) {
@@ -3736,20 +3743,13 @@ bool OCRAnalysis::alignAndMarkElements(const std::string &renderedImagePath,
         alignedCount++;
       }
 
-      // Apply scaling to convert from rendered image space to original image
-      // space
-      int scaledX = static_cast<int>(adjustedX * scaleX);
-      int scaledY = static_cast<int>(adjustedY * scaleY);
-      int scaledWidth = static_cast<int>(boxWidth * scaleX);
-      int scaledHeight = static_cast<int>(boxHeight * scaleY);
-
       // Clamp coordinates to original image bounds
-      int drawX1 = std::max(0, std::min(scaledX, originalImage.cols));
-      int drawY1 = std::max(0, std::min(scaledY, originalImage.rows));
+      int drawX1 = std::max(0, std::min(adjustedX, originalImage.cols));
+      int drawY1 = std::max(0, std::min(adjustedY, originalImage.rows));
       int drawX2 =
-          std::max(0, std::min(scaledX + scaledWidth, originalImage.cols));
+          std::max(0, std::min(adjustedX + boxWidth, originalImage.cols));
       int drawY2 =
-          std::max(0, std::min(scaledY + scaledHeight, originalImage.rows));
+          std::max(0, std::min(adjustedY + boxHeight, originalImage.rows));
 
       // Only draw if we have a valid rectangle
       if (drawX2 > drawX1 && drawY2 > drawY1) {
