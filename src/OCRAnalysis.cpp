@@ -3539,6 +3539,16 @@ bool OCRAnalysis::alignAndMarkElements(const std::string &renderedImagePath,
           continue;
         }
 
+        // Skip elements that are mostly underscores (difficult for OCR)
+        size_t underscoreCount =
+            std::count(elem.text.begin(), elem.text.end(), '_');
+        if (underscoreCount > elem.text.length() / 2) {
+          std::cerr << "Skipping element " << elemIdx
+                    << " (mostly underscores): \"" << elem.text.substr(0, 20)
+                    << "\"" << std::endl;
+          continue;
+        }
+
         // Scale element coordinates to original image space
         int scaledElemX = static_cast<int>(elem.pixelX * scaleX);
         int scaledElemY = static_cast<int>(elem.pixelY * scaleY);
@@ -3684,6 +3694,13 @@ bool OCRAnalysis::alignAndMarkElements(const std::string &renderedImagePath,
           continue;
         }
 
+        // Skip elements that are mostly underscores
+        size_t underscoreCount =
+            std::count(elem.text.begin(), elem.text.end(), '_');
+        if (underscoreCount > elem.text.length() / 2) {
+          continue;
+        }
+
         auto it = elementAlignments.find(elemIdx);
         if (it != elementAlignments.end() && it->second.found) {
           continue; // Already has alignment
@@ -3743,6 +3760,13 @@ bool OCRAnalysis::alignAndMarkElements(const std::string &renderedImagePath,
 
       // Only process text elements
       if (elem.type != RenderedElement::TEXT || elem.text.empty()) {
+        continue;
+      }
+
+      // Skip elements that are mostly underscores
+      size_t underscoreCount =
+          std::count(elem.text.begin(), elem.text.end(), '_');
+      if (underscoreCount > elem.text.length() / 2) {
         continue;
       }
 
