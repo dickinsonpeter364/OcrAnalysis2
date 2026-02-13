@@ -3785,33 +3785,51 @@ bool OCRAnalysis::alignAndMarkElements(const std::string &renderedImagePath,
         adjustedY = scaledElemY + it->second.offsetY;
       }
 
-      // Calculate optimal height based on PDF font size
-      // Font size is in points, convert to pixels (1 point ≈ 1.333 pixels at 96
-      // DPI) Then scale to target image
-      double fontSizePixels = elem.fontSize * 1.333 * scaleY;
-      int minExpectedHeight =
-          static_cast<int>(fontSizePixels * 1.2); // 1.2x for line height
-      int maxReasonableHeight = static_cast<int>(
-          fontSizePixels * 20); // Cap at 20x font size (PDF fontSize seems to
-                                // be in different units)
-
-      // Use PDF height but cap it to avoid overly tall boxes
-      // PDF height is the actual rendered height, but may include extra
-      // vertical space
-      int finalHeight = std::min(scaledElemHeight, maxReasonableHeight);
-
-      // Ensure we have at least the minimum expected height
-      finalHeight = std::max(finalHeight, minExpectedHeight);
-
-      std::cerr << "Element " << elemIdx << " \"" << elem.text.substr(0, 20)
-                << "\": fontSize=" << elem.fontSize
-                << "pt, PDF height=" << scaledElemHeight
-                << ", min=" << minExpectedHeight
-                << ", max=" << maxReasonableHeight << ", using=" << finalHeight
-                << std::endl;
-
       boxes.push_back({elemIdx, adjustedX, adjustedY, scaledElemWidth,
-                       finalHeight, elem.text, elem.fontSize});
+                       scaledElemHeight, elem.text, elem.fontSize});
+    }
+
+    // Group boxes by fontSize and calculate uniform heights
+    std::map<double, int> fontSizeToUniformHeight;
+    std::cerr << "Calculating uniform heights for each fontSize group..."
+              << std::endl;
+
+    // First pass: find maximum height needed for each fontSize
+    for (const auto &box : boxes) {
+      double fontSize = box.fontSize;
+      if (fontSizeToUniformHeight.find(fontSize) ==
+          fontSizeToUniformHeight.end()) {
+        fontSizeToUniformHeight[fontSize] = 0;
+      }
+      // Track the maximum height for this fontSize
+      fontSizeToUniformHeight[fontSize] =
+          std::max(fontSizeToUniformHeight[fontSize], box.height);
+    }
+
+    // Add padding to each fontSize group's height
+    const int VERTICAL_PADDING = 4; // pixels of padding above and below
+    for (auto &pair : fontSizeToUniformHeight) {
+      pair.second += VERTICAL_PADDING * 2;
+      std::cerr << "  fontSize " << pair.first
+                << "pt: uniform height = " << pair.second
+                << " pixels (includes " << (VERTICAL_PADDING * 2)
+                << "px padding)" << std::endl;
+    }
+
+    // Second pass: apply uniform heights and center vertically
+    for (auto &box : boxes) {
+      int oldHeight = box.height;
+      int uniformHeight = fontSizeToUniformHeight[box.fontSize];
+      int heightDiff = uniformHeight - oldHeight;
+
+      // Center the box vertically by adjusting Y position
+      box.y -= heightDiff / 2;
+      box.height = uniformHeight;
+
+      std::cerr << "Element " << box.elemIdx << " \"" << box.text.substr(0, 20)
+                << "\": fontSize=" << box.fontSize << "pt, adjusted height "
+                << oldHeight << " → " << uniformHeight << ", y offset "
+                << (heightDiff / 2) << std::endl;
     }
 
     // Check for vertical overlaps and adjust
