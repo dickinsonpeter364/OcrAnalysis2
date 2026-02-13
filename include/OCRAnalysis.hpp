@@ -497,6 +497,69 @@ public:
   static void sortByPosition(PNGRenderResult &result);
 
   /**
+   * @brief Structure to hold element position and size in relative coordinates
+   *
+   * All coordinates are fractions (0.0 to 1.0) relative to the calculated
+   * rectangle bounds (crop marks or largest rectangle), with origin at
+   * top-left.
+   */
+  struct RelativeElement {
+    enum Type { TEXT, IMAGE, RECTANGLE, LINE };
+
+    Type type;
+    double relativeX; ///< X position as fraction of rectangle width (0.0 = left
+                      ///< edge)
+    double relativeY; ///< Y position as fraction of rectangle height (0.0 = top
+                      ///< edge)
+    double relativeWidth;  ///< Width as fraction of rectangle width
+    double relativeHeight; ///< Height as fraction of rectangle height
+
+    // Text-specific fields
+    std::string text;      ///< Text content (for TEXT type)
+    std::string fontName;  ///< Font family name (for TEXT type)
+    double fontSize = 0.0; ///< Font size in points (for TEXT type)
+    bool isBold = false;   ///< Whether font is bold (for TEXT type)
+    bool isItalic = false; ///< Whether font is italic (for TEXT type)
+
+    // Line-specific fields (for LINE type)
+    double relativeX2 = 0.0; ///< End X position as fraction (for LINE type)
+    double relativeY2 = 0.0; ///< End Y position as fraction (for LINE type)
+  };
+
+  /**
+   * @brief Result of creating a relative coordinate map
+   */
+  struct RelativeMapResult {
+    bool success = false;
+    std::string errorMessage;
+    std::vector<RelativeElement> elements;
+
+    // The calculated rectangle bounds used for relative coordinates
+    double boundsX = 0.0;      ///< X position of bounds in PDF points
+    double boundsY = 0.0;      ///< Y position of bounds in PDF points
+    double boundsWidth = 0.0;  ///< Width of bounds in PDF points
+    double boundsHeight = 0.0; ///< Height of bounds in PDF points
+  };
+
+  /**
+   * @brief Create a resolution-independent map of element positions
+   *
+   * Uses the same crop marks or largest rectangle logic as renderElementsToPNG
+   * to determine the bounds, then returns all text and image element positions
+   * and sizes as fractions (0.0 to 1.0) relative to those bounds with origin
+   * at top-left. This creates a resolution-independent coordinate system that
+   * can be applied to images of any size.
+   *
+   * @param elements The extracted PDF elements
+   * @param boundsMode Mode for determining bounds (USE_CROP_MARKS or
+   * USE_LARGEST_RECTANGLE)
+   * @return RelativeMapResult containing elements in relative coordinates
+   */
+  RelativeMapResult createRelativeMap(
+      const PDFElements &elements,
+      RenderBoundsMode boundsMode = RenderBoundsMode::USE_CROP_MARKS);
+
+  /**
    * @brief Align elements using OCR and create marked image with adjusted boxes
    *
    * Uses Tesseract OCR to locate the first text element in the rendered image,

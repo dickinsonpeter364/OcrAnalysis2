@@ -35,6 +35,7 @@ message(STATUS "Poppler include dirs: ${POPPLER_CPP_INCLUDE_DIRS}")
 # Define the library
 add_library(ocr_analysis
     src/OCRAnalysis.cpp
+    src/create_relative_map.cpp
 )
 
 target_include_directories(ocr_analysis
