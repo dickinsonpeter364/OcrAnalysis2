@@ -3716,12 +3716,15 @@ bool OCRAnalysis::alignAndMarkElements(const std::string &renderedImagePath,
 
         if (nearestIdx >= 0) {
           auto nearestAlignment = elementAlignments[nearestIdx];
-          elementAlignments[elemIdx] = {nearestAlignment.offsetX,
-                                        nearestAlignment.offsetY, -1, -1, true};
+          // Only copy horizontal offset, keep original vertical position
+          // (offsetY=0) This prevents underscores from being vertically
+          // misaligned
+          elementAlignments[elemIdx] = {nearestAlignment.offsetX, 0, -1, -1,
+                                        true};
           std::cerr << "Element " << elemIdx << " \"" << elem.text.substr(0, 20)
-                    << "\": using offset from element " << nearestIdx << " ("
-                    << nearestAlignment.offsetX << ", "
-                    << nearestAlignment.offsetY << ")" << std::endl;
+                    << "\": using horizontal offset from element " << nearestIdx
+                    << " (offsetX=" << nearestAlignment.offsetX
+                    << ", keeping original Y)" << std::endl;
         }
       }
     }
@@ -3760,10 +3763,8 @@ bool OCRAnalysis::alignAndMarkElements(const std::string &renderedImagePath,
       if (it != elementAlignments.end() && it->second.found) {
         adjustedX = scaledElemX + it->second.offsetX;
         adjustedY = scaledElemY + it->second.offsetY;
-        // Use OCR dimensions if available for tighter, non-overlapping boxes
-        if (it->second.width > 0) {
-          boxWidth = it->second.width;
-        }
+        // Keep PDF width for full text coverage, use OCR height for tighter
+        // vertical bounds boxWidth stays as scaledElemWidth (PDF width)
         if (it->second.height > 0) {
           boxHeight = it->second.height;
         }
