@@ -3752,6 +3752,7 @@ bool OCRAnalysis::alignAndMarkElements(const std::string &renderedImagePath,
       size_t elemIdx;
       int x, y, width, height;
       std::string text;
+      double fontSize; // PDF font size in points
     };
     std::vector<BoxInfo> boxes;
 
@@ -3784,8 +3785,33 @@ bool OCRAnalysis::alignAndMarkElements(const std::string &renderedImagePath,
         adjustedY = scaledElemY + it->second.offsetY;
       }
 
+      // Calculate optimal height based on PDF font size
+      // Font size is in points, convert to pixels (1 point ≈ 1.333 pixels at 96
+      // DPI) Then scale to target image
+      double fontSizePixels = elem.fontSize * 1.333 * scaleY;
+      int minExpectedHeight =
+          static_cast<int>(fontSizePixels * 1.2); // 1.2x for line height
+      int maxReasonableHeight = static_cast<int>(
+          fontSizePixels * 20); // Cap at 20x font size (PDF fontSize seems to
+                                // be in different units)
+
+      // Use PDF height but cap it to avoid overly tall boxes
+      // PDF height is the actual rendered height, but may include extra
+      // vertical space
+      int finalHeight = std::min(scaledElemHeight, maxReasonableHeight);
+
+      // Ensure we have at least the minimum expected height
+      finalHeight = std::max(finalHeight, minExpectedHeight);
+
+      std::cerr << "Element " << elemIdx << " \"" << elem.text.substr(0, 20)
+                << "\": fontSize=" << elem.fontSize
+                << "pt, PDF height=" << scaledElemHeight
+                << ", min=" << minExpectedHeight
+                << ", max=" << maxReasonableHeight << ", using=" << finalHeight
+                << std::endl;
+
       boxes.push_back({elemIdx, adjustedX, adjustedY, scaledElemWidth,
-                       scaledElemHeight, elem.text});
+                       finalHeight, elem.text, elem.fontSize});
     }
 
     // Check for vertical overlaps and adjust
@@ -3920,16 +3946,19 @@ bool OCRAnalysis::alignAndMarkElements(const std::string &renderedImagePath,
 
           delete[] ocrText;
 
-          // If box is too tall (height > 2x width for single chars), try to
-          // shrink it
-          if (box.width > 0 && box.height > box.width * 2 &&
-              expectedText.length() <= 5) {
-            std::cerr << "  Box too tall (" << box.height << " vs width "
-                      << box.width << "), attempting to shrink..." << std::endl;
+          // If box is too tall compared to font size, try to shrink it
+          // Calculate expected height from font size
+          double fontSizePixels = box.fontSize * 1.333 * scaleY;
+          int expectedHeight = static_cast<int>(fontSizePixels * 1.2);
+
+          if (box.height > expectedHeight * 1.5 && expectedText.length() <= 5) {
+            std::cerr << "  Box too tall (" << box.height << " vs expected "
+                      << expectedHeight << " from " << box.fontSize
+                      << "pt font), attempting to shrink..." << std::endl;
 
             // Try shrinking from bottom
             int originalHeight = box.height;
-            int minHeight = box.width; // At least as tall as wide
+            int minHeight = expectedHeight; // At least the expected font height
 
             for (int testHeight = minHeight; testHeight < originalHeight;
                  testHeight += 5) {
