@@ -3553,15 +3553,23 @@ bool OCRAnalysis::alignAndMarkElements(const std::string &renderedImagePath,
         if (!representative)
           continue;
 
-        // Define search region around the expected position
+        // Scale representative coordinates to original image space
+        int scaledRepX = static_cast<int>(representative->pixelX * scaleX);
+        int scaledRepY = static_cast<int>(representative->pixelY * scaleY);
+        int scaledRepWidth =
+            static_cast<int>(representative->pixelWidth * scaleX);
+        int scaledRepHeight =
+            static_cast<int>(representative->pixelHeight * scaleY);
+
+        // Define search region around the expected position (in original image
+        // space)
         const int SEARCH_RADIUS = 150; // pixels to search in each direction
-        int roiX = std::max(0, representative->pixelX - SEARCH_RADIUS);
-        int roiY = std::max(0, representative->pixelY - SEARCH_RADIUS);
-        int roiWidth = std::min(SEARCH_RADIUS * 2 + representative->pixelWidth,
+        int roiX = std::max(0, scaledRepX - SEARCH_RADIUS);
+        int roiY = std::max(0, scaledRepY - SEARCH_RADIUS);
+        int roiWidth = std::min(SEARCH_RADIUS * 2 + scaledRepWidth,
                                 originalImage.cols - roiX);
-        int roiHeight =
-            std::min(SEARCH_RADIUS * 2 + representative->pixelHeight,
-                     originalImage.rows - roiY);
+        int roiHeight = std::min(SEARCH_RADIUS * 2 + scaledRepHeight,
+                                 originalImage.rows - roiY);
 
         // Skip if ROI is invalid
         if (roiWidth <= 0 || roiHeight <= 0)
@@ -3591,6 +3599,11 @@ bool OCRAnalysis::alignAndMarkElements(const std::string &renderedImagePath,
         std::transform(repText.begin(), repText.end(), repText.begin(),
                        [](unsigned char c) { return std::tolower(c); });
 
+        std::cerr << "DEBUG: Searching for \"" << repText << "\" in ROI at ("
+                  << roiX << "," << roiY << ") size " << roiWidth << "x"
+                  << roiHeight << ", scaled rep pos (" << scaledRepX << ","
+                  << scaledRepY << ")" << std::endl;
+
         // Find matching text in ROI
         tesseract::ResultIterator *roiRi = roiOcr->GetIterator();
         int bestOffsetX = 0;
@@ -3615,11 +3628,32 @@ bool OCRAnalysis::alignAndMarkElements(const std::string &renderedImagePath,
                              cleanWord.begin(),
                              [](unsigned char c) { return std::tolower(c); });
 
-              // Check if text matches
+              std::cerr << "DEBUG ROI: Found word \"" << cleanWord << "\""
+                        << std::endl;
+
+              // Calculate similarity between cleanWord and repText
+              auto calculateSimilarity = [](const std::string &s1,
+                                            const std::string &s2) -> double {
+                if (s1.empty() || s2.empty())
+                  return 0.0;
+                size_t matches = 0;
+                size_t maxLen = std::max(s1.length(), s2.length());
+                size_t minLen = std::min(s1.length(), s2.length());
+                for (size_t i = 0; i < minLen; i++) {
+                  if (s1[i] == s2[i])
+                    matches++;
+                }
+                return static_cast<double>(matches) / maxLen;
+              };
+
+              double similarity = calculateSimilarity(cleanWord, repText);
+
+              // Check if text matches (exact, substring, or fuzzy)
               bool textMatches =
                   (cleanWord == repText) ||
                   (cleanWord.find(repText) != std::string::npos) ||
-                  (repText.find(cleanWord) != std::string::npos);
+                  (repText.find(cleanWord) != std::string::npos) ||
+                  (similarity >= 0.7); // 70% similarity threshold
 
               if (textMatches) {
                 int x1, y1, x2, y2;
@@ -3629,14 +3663,15 @@ bool OCRAnalysis::alignAndMarkElements(const std::string &renderedImagePath,
                 int absX = roiX + x1;
                 int absY = roiY + y1;
 
-                double dx = absX - representative->pixelX;
-                double dy = absY - representative->pixelY;
+                // Calculate offset in original image space
+                double dx = absX - scaledRepX;
+                double dy = absY - scaledRepY;
                 double distance = std::sqrt(dx * dx + dy * dy);
 
                 if (distance < bestDistance) {
                   bestDistance = distance;
-                  bestOffsetX = absX - representative->pixelX;
-                  bestOffsetY = absY - representative->pixelY;
+                  bestOffsetX = absX - scaledRepX;
+                  bestOffsetY = absY - scaledRepY;
                   bestOcrWidth = x2 - x1;
                   bestOcrHeight = y2 - y1;
                   foundMatch = true;
