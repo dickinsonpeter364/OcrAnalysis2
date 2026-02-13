@@ -3760,8 +3760,10 @@ bool OCRAnalysis::alignAndMarkElements(const std::string &renderedImagePath,
       if (it != elementAlignments.end() && it->second.found) {
         adjustedX = scaledElemX + it->second.offsetX;
         adjustedY = scaledElemY + it->second.offsetY;
-        // Use OCR height if available (height > 0), but keep original width
-        // OCR detects entire words which may span multiple elements
+        // Use OCR dimensions if available for tighter, non-overlapping boxes
+        if (it->second.width > 0) {
+          boxWidth = it->second.width;
+        }
         if (it->second.height > 0) {
           boxHeight = it->second.height;
         }
