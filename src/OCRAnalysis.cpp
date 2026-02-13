@@ -3674,6 +3674,56 @@ bool OCRAnalysis::alignAndMarkElements(const std::string &renderedImagePath,
           elementAlignments[elemIdx] = {0, 0, -1, -1, false};
         }
       }
+
+      // Fill in missing alignments by interpolating from nearby elements
+      std::cerr << "Filling in missing alignments..." << std::endl;
+      for (size_t elemIdx = 0; elemIdx < renderResult.elements.size();
+           elemIdx++) {
+        const auto &elem = renderResult.elements[elemIdx];
+        if (elem.type != RenderedElement::TEXT || elem.text.empty()) {
+          continue;
+        }
+
+        auto it = elementAlignments.find(elemIdx);
+        if (it != elementAlignments.end() && it->second.found) {
+          continue; // Already has alignment
+        }
+
+        // Find nearest aligned element
+        int nearestIdx = -1;
+        double nearestDist = std::numeric_limits<double>::max();
+
+        for (size_t otherIdx = 0; otherIdx < renderResult.elements.size();
+             otherIdx++) {
+          if (otherIdx == elemIdx)
+            continue;
+
+          auto otherIt = elementAlignments.find(otherIdx);
+          if (otherIt == elementAlignments.end() || !otherIt->second.found) {
+            continue;
+          }
+
+          const auto &otherElem = renderResult.elements[otherIdx];
+          double dx = elem.pixelX - otherElem.pixelX;
+          double dy = elem.pixelY - otherElem.pixelY;
+          double dist = std::sqrt(dx * dx + dy * dy);
+
+          if (dist < nearestDist) {
+            nearestDist = dist;
+            nearestIdx = otherIdx;
+          }
+        }
+
+        if (nearestIdx >= 0) {
+          auto nearestAlignment = elementAlignments[nearestIdx];
+          elementAlignments[elemIdx] = {nearestAlignment.offsetX,
+                                        nearestAlignment.offsetY, -1, -1, true};
+          std::cerr << "Element " << elemIdx << " \"" << elem.text.substr(0, 20)
+                    << "\": using offset from element " << nearestIdx << " ("
+                    << nearestAlignment.offsetX << ", "
+                    << nearestAlignment.offsetY << ")" << std::endl;
+        }
+      }
     }
 
     // Create a copy of the original image for marking
