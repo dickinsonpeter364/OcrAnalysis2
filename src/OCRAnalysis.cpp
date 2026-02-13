@@ -3832,7 +3832,10 @@ bool OCRAnalysis::alignAndMarkElements(const std::string &renderedImagePath,
                 << (heightDiff / 2) << std::endl;
     }
 
-    // Check for vertical overlaps and adjust
+    // Check for vertical overlaps and adjust Y positions (preserve uniform
+    // heights)
+    std::cerr << "Resolving overlaps while preserving uniform heights..."
+              << std::endl;
     for (size_t i = 0; i < boxes.size(); i++) {
       for (size_t j = i + 1; j < boxes.size(); j++) {
         auto &box1 = boxes[i];
@@ -3855,27 +3858,74 @@ bool OCRAnalysis::alignAndMarkElements(const std::string &renderedImagePath,
                     << " and " << box2.elemIdx << " (" << vOverlap << " pixels)"
                     << std::endl;
 
-          // Shrink the lower box from the top
+          // Adjust Y position of lower box to avoid overlap (preserve height!)
           if (box1.y < box2.y) {
             int newBox2Y = box1Bottom;
-            int newBox2Height = box2Bottom - newBox2Y;
-            if (newBox2Height > 5) { // Minimum height
-              box2.y = newBox2Y;
-              box2.height = newBox2Height;
-              std::cerr << "  Adjusted element " << box2.elemIdx
-                        << " to avoid overlap" << std::endl;
-            }
+            box2.y = newBox2Y;
+            std::cerr << "  Moved element " << box2.elemIdx
+                      << " down to Y=" << newBox2Y << " (height preserved at "
+                      << box2.height << ")" << std::endl;
           } else {
             int newBox1Y = box2Bottom;
-            int newBox1Height = box1Bottom - newBox1Y;
-            if (newBox1Height > 5) { // Minimum height
-              box1.y = newBox1Y;
-              box1.height = newBox1Height;
-              std::cerr << "  Adjusted element " << box1.elemIdx
-                        << " to avoid overlap" << std::endl;
-            }
+            box1.y = newBox1Y;
+            std::cerr << "  Moved element " << box1.elemIdx
+                      << " down to Y=" << newBox1Y << " (height preserved at "
+                      << box1.height << ")" << std::endl;
           }
         }
+      }
+    }
+
+    // Expand boxes horizontally to maximize width without overlapping
+    std::cerr << "Expanding boxes horizontally..." << std::endl;
+    for (auto &box : boxes) {
+      // Find the maximum width we can expand to
+      int maxExpandLeft = box.x; // Can expand to left edge of image
+      int maxExpandRight =
+          originalImage.cols - (box.x + box.width); // Can expand to right edge
+
+      // Check for horizontal neighbors that would limit expansion
+      for (const auto &other : boxes) {
+        if (other.elemIdx == box.elemIdx)
+          continue;
+
+        // Check if boxes are vertically aligned (could interfere horizontally)
+        int vOverlap = std::min(box.y + box.height, other.y + other.height) -
+                       std::max(box.y, other.y);
+        if (vOverlap <= 0)
+          continue; // No vertical overlap, won't interfere
+
+        // Check if other box is to the left
+        if (other.x + other.width <= box.x) {
+          int gap = box.x - (other.x + other.width);
+          maxExpandLeft = std::min(maxExpandLeft, gap);
+        }
+        // Check if other box is to the right
+        else if (other.x >= box.x + box.width) {
+          int gap = other.x - (box.x + box.width);
+          maxExpandRight = std::min(maxExpandRight, gap);
+        }
+      }
+
+      // Apply expansion (leave 2px gap on each side for safety)
+      // Also limit expansion to reasonable amount (50% of original width on
+      // each side)
+      const int HORIZONTAL_GAP = 2;
+      int maxReasonableExpand =
+          box.width / 2; // Don't expand more than 50% of original width
+      int expandLeft = std::max(
+          0, std::min(maxExpandLeft - HORIZONTAL_GAP, maxReasonableExpand));
+      int expandRight = std::max(
+          0, std::min(maxExpandRight - HORIZONTAL_GAP, maxReasonableExpand));
+
+      if (expandLeft > 0 || expandRight > 0) {
+        int oldX = box.x;
+        int oldWidth = box.width;
+        box.x -= expandLeft;
+        box.width += expandLeft + expandRight;
+        std::cerr << "Element " << box.elemIdx << ": expanded width "
+                  << oldWidth << " → " << box.width << " (left+" << expandLeft
+                  << ", right+" << expandRight << ")" << std::endl;
       }
     }
 
