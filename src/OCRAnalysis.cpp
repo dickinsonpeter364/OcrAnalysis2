@@ -3744,61 +3744,170 @@ bool OCRAnalysis::alignAndMarkElements(const std::string &renderedImagePath,
       }
     }
 
-    // Create a copy of the original image for marking
-    cv::Mat markedImage = originalImage.clone();
+    // Detect and resolve overlaps
+    std::cerr << "Checking for overlapping boxes..." << std::endl;
 
-    // Draw adjusted bounding boxes in blue
-    cv::Scalar blueColor(255, 0, 0); // Blue in BGR
-    int drawnCount = 0;
-    int alignedCount = 0;
+    // Build list of boxes with their element info
+    struct BoxInfo {
+      size_t elemIdx;
+      int x, y, width, height;
+      std::string text;
+    };
+    std::vector<BoxInfo> boxes;
 
     for (size_t elemIdx = 0; elemIdx < renderResult.elements.size();
          elemIdx++) {
       const auto &elem = renderResult.elements[elemIdx];
 
-      // Only process text elements
       if (elem.type != RenderedElement::TEXT || elem.text.empty()) {
         continue;
       }
 
-      // Skip elements that are mostly underscores
+      // Skip underscore elements
       size_t underscoreCount =
           std::count(elem.text.begin(), elem.text.end(), '_');
       if (underscoreCount > elem.text.length() / 2) {
         continue;
       }
 
-      // First, scale element coordinates from rendered space to original image
-      // space
       int scaledElemX = static_cast<int>(elem.pixelX * scaleX);
       int scaledElemY = static_cast<int>(elem.pixelY * scaleY);
       int scaledElemWidth = static_cast<int>(elem.pixelWidth * scaleX);
       int scaledElemHeight = static_cast<int>(elem.pixelHeight * scaleY);
 
-      // Now apply offset (which is already in original image space)
       int adjustedX = scaledElemX;
       int adjustedY = scaledElemY;
-      int boxWidth = scaledElemWidth;
-      int boxHeight = scaledElemHeight;
 
       auto it = elementAlignments.find(elemIdx);
       if (it != elementAlignments.end() && it->second.found) {
         adjustedX = scaledElemX + it->second.offsetX;
         adjustedY = scaledElemY + it->second.offsetY;
-        // Keep PDF dimensions (both width and height) for accurate text
-        // coverage OCR dimensions can be too large, especially for small
-        // elements boxWidth and boxHeight stay as scaledElemWidth/Height (PDF
-        // dimensions)
-        alignedCount++;
       }
 
+      boxes.push_back({elemIdx, adjustedX, adjustedY, scaledElemWidth,
+                       scaledElemHeight, elem.text});
+    }
+
+    // Check for vertical overlaps and adjust
+    for (size_t i = 0; i < boxes.size(); i++) {
+      for (size_t j = i + 1; j < boxes.size(); j++) {
+        auto &box1 = boxes[i];
+        auto &box2 = boxes[j];
+
+        // Check if boxes overlap horizontally (same column)
+        int hOverlap = std::min(box1.x + box1.width, box2.x + box2.width) -
+                       std::max(box1.x, box2.x);
+        if (hOverlap <= 0)
+          continue; // No horizontal overlap
+
+        // Check vertical overlap
+        int box1Bottom = box1.y + box1.height;
+        int box2Bottom = box2.y + box2.height;
+        int vOverlap =
+            std::min(box1Bottom, box2Bottom) - std::max(box1.y, box2.y);
+
+        if (vOverlap > 0) {
+          std::cerr << "Overlap detected between element " << box1.elemIdx
+                    << " and " << box2.elemIdx << " (" << vOverlap << " pixels)"
+                    << std::endl;
+
+          // Shrink the lower box from the top
+          if (box1.y < box2.y) {
+            int newBox2Y = box1Bottom;
+            int newBox2Height = box2Bottom - newBox2Y;
+            if (newBox2Height > 5) { // Minimum height
+              box2.y = newBox2Y;
+              box2.height = newBox2Height;
+              std::cerr << "  Adjusted element " << box2.elemIdx
+                        << " to avoid overlap" << std::endl;
+            }
+          } else {
+            int newBox1Y = box2Bottom;
+            int newBox1Height = box1Bottom - newBox1Y;
+            if (newBox1Height > 5) { // Minimum height
+              box1.y = newBox1Y;
+              box1.height = newBox1Height;
+              std::cerr << "  Adjusted element " << box1.elemIdx
+                        << " to avoid overlap" << std::endl;
+            }
+          }
+        }
+      }
+    }
+
+    // Verify each box still contains correct text using OCR
+    std::cerr << "Verifying boxes with OCR..." << std::endl;
+    tesseract::TessBaseAPI *verifyOcr = new tesseract::TessBaseAPI();
+    if (verifyOcr->Init("C:/tessdata/tessdata", "eng") != 0 &&
+        verifyOcr->Init(NULL, "eng") != 0) {
+      std::cerr << "WARNING: Could not initialize OCR for verification"
+                << std::endl;
+    } else {
+      for (auto &box : boxes) {
+        // Extract ROI
+        cv::Rect roi(box.x, box.y, box.width, box.height);
+        roi = roi & cv::Rect(0, 0, originalImage.cols,
+                             originalImage.rows); // Clamp to image
+
+        if (roi.width <= 0 || roi.height <= 0)
+          continue;
+
+        cv::Mat roiImage = originalImage(roi);
+
+        // Run OCR
+        verifyOcr->SetImage(roiImage.data, roiImage.cols, roiImage.rows, 3,
+                            roiImage.step);
+        char *ocrText = verifyOcr->GetUTF8Text();
+
+        if (ocrText) {
+          std::string detectedText(ocrText);
+          // Clean up
+          detectedText.erase(
+              std::remove_if(detectedText.begin(), detectedText.end(),
+                             [](unsigned char c) { return std::isspace(c); }),
+              detectedText.end());
+          std::transform(detectedText.begin(), detectedText.end(),
+                         detectedText.begin(),
+                         [](unsigned char c) { return std::tolower(c); });
+
+          std::string expectedText = box.text;
+          expectedText.erase(
+              std::remove_if(expectedText.begin(), expectedText.end(),
+                             [](unsigned char c) { return std::isspace(c); }),
+              expectedText.end());
+          std::transform(expectedText.begin(), expectedText.end(),
+                         expectedText.begin(),
+                         [](unsigned char c) { return std::tolower(c); });
+
+          bool matches =
+              (detectedText.find(expectedText) != std::string::npos) ||
+              (expectedText.find(detectedText) != std::string::npos);
+
+          std::cerr << "Element " << box.elemIdx << " \"" << box.text
+                    << "\": OCR=\"" << detectedText << "\" "
+                    << (matches ? "✓" : "✗") << std::endl;
+
+          delete[] ocrText;
+        }
+      }
+      verifyOcr->End();
+    }
+    delete verifyOcr;
+
+    // Create a copy of the original image for marking
+    cv::Mat markedImage = originalImage.clone();
+
+    // Draw adjusted bounding boxes in blue
+    cv::Scalar blueColor(255, 0, 0); // Blue in BGR
+    int drawnCount = 0;
+
+    for (const auto &box : boxes) {
       // Clamp coordinates to original image bounds
-      int drawX1 = std::max(0, std::min(adjustedX, originalImage.cols));
-      int drawY1 = std::max(0, std::min(adjustedY, originalImage.rows));
-      int drawX2 =
-          std::max(0, std::min(adjustedX + boxWidth, originalImage.cols));
+      int drawX1 = std::max(0, std::min(box.x, originalImage.cols));
+      int drawY1 = std::max(0, std::min(box.y, originalImage.rows));
+      int drawX2 = std::max(0, std::min(box.x + box.width, originalImage.cols));
       int drawY2 =
-          std::max(0, std::min(adjustedY + boxHeight, originalImage.rows));
+          std::max(0, std::min(box.y + box.height, originalImage.rows));
 
       // Only draw if we have a valid rectangle
       if (drawX2 > drawX1 && drawY2 > drawY1) {
@@ -3808,8 +3917,7 @@ bool OCRAnalysis::alignAndMarkElements(const std::string &renderedImagePath,
       }
     }
 
-    std::cerr << "Drew " << drawnCount << " boxes (" << alignedCount
-              << " aligned with OCR)" << std::endl;
+    std::cerr << "Drew " << drawnCount << " non-overlapping boxes" << std::endl;
 
     // Save the marked image
     if (cv::imwrite(outputPath, markedImage)) {
