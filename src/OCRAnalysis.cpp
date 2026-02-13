@@ -3879,15 +3879,103 @@ bool OCRAnalysis::alignAndMarkElements(const std::string &renderedImagePath,
                          expectedText.begin(),
                          [](unsigned char c) { return std::tolower(c); });
 
+          // Calculate character-level similarity for fuzzy matching
+          auto calculateSimilarity = [](const std::string &s1,
+                                        const std::string &s2) -> double {
+            if (s1.empty() || s2.empty())
+              return 0.0;
+            size_t matches = 0;
+            size_t maxLen = std::max(s1.length(), s2.length());
+            size_t minLen = std::min(s1.length(), s2.length());
+
+            // Count matching characters at same positions
+            for (size_t i = 0; i < minLen; i++) {
+              if (s1[i] == s2[i])
+                matches++;
+              // Handle common OCR confusions
+              else if ((s1[i] == 'i' && s2[i] == '1') ||
+                       (s1[i] == '1' && s2[i] == 'i'))
+                matches++;
+              else if ((s1[i] == 'o' && s2[i] == '0') ||
+                       (s1[i] == '0' && s2[i] == 'o'))
+                matches++;
+              else if ((s1[i] == 'l' && s2[i] == '1') ||
+                       (s1[i] == '1' && s2[i] == 'l'))
+                matches++;
+            }
+            return static_cast<double>(matches) / maxLen;
+          };
+
+          double similarity = calculateSimilarity(detectedText, expectedText);
+
           bool matches =
               (detectedText.find(expectedText) != std::string::npos) ||
-              (expectedText.find(detectedText) != std::string::npos);
+              (expectedText.find(detectedText) != std::string::npos) ||
+              (similarity >= 0.7); // 70% similarity threshold
 
           std::cerr << "Element " << box.elemIdx << " \"" << box.text
-                    << "\": OCR=\"" << detectedText << "\" "
-                    << (matches ? "✓" : "✗") << std::endl;
+                    << "\": OCR=\"" << detectedText
+                    << "\" similarity=" << std::fixed << std::setprecision(2)
+                    << similarity << " " << (matches ? "✓" : "✗") << std::endl;
 
           delete[] ocrText;
+
+          // If box is too tall (height > 2x width for single chars), try to
+          // shrink it
+          if (box.width > 0 && box.height > box.width * 2 &&
+              expectedText.length() <= 5) {
+            std::cerr << "  Box too tall (" << box.height << " vs width "
+                      << box.width << "), attempting to shrink..." << std::endl;
+
+            // Try shrinking from bottom
+            int originalHeight = box.height;
+            int minHeight = box.width; // At least as tall as wide
+
+            for (int testHeight = minHeight; testHeight < originalHeight;
+                 testHeight += 5) {
+              cv::Rect testRoi(box.x, box.y, box.width, testHeight);
+              testRoi = testRoi &
+                        cv::Rect(0, 0, originalImage.cols, originalImage.rows);
+
+              if (testRoi.width <= 0 || testRoi.height <= 0)
+                continue;
+
+              cv::Mat testImage = originalImage(testRoi);
+              verifyOcr->SetImage(testImage.data, testImage.cols,
+                                  testImage.rows, 3, testImage.step);
+              char *testText = verifyOcr->GetUTF8Text();
+
+              if (testText) {
+                std::string testDetected(testText);
+                testDetected.erase(std::remove_if(testDetected.begin(),
+                                                  testDetected.end(),
+                                                  [](unsigned char c) {
+                                                    return std::isspace(c);
+                                                  }),
+                                   testDetected.end());
+                std::transform(testDetected.begin(), testDetected.end(),
+                               testDetected.begin(),
+                               [](unsigned char c) { return std::tolower(c); });
+
+                double testSim =
+                    calculateSimilarity(testDetected, expectedText);
+                bool testMatches =
+                    (testDetected.find(expectedText) != std::string::npos) ||
+                    (expectedText.find(testDetected) != std::string::npos) ||
+                    (testSim >= 0.7);
+
+                if (testMatches && testSim >= similarity) {
+                  box.height = testHeight;
+                  similarity = testSim;
+                  std::cerr << "  Shrunk to height " << testHeight
+                            << ", similarity=" << testSim << std::endl;
+                  break;
+                }
+
+                delete[] testText;
+              }
+            }
+          }
         }
       }
       verifyOcr->End();
