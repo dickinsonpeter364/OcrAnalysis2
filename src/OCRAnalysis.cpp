@@ -3373,66 +3373,8 @@ OCRAnalysis::PNGRenderResult OCRAnalysis::renderElementsToPNG(
     std::cerr << "PNG rendered successfully: " << outputPath << std::endl;
     std::cerr << "  Total elements: " << result.elements.size() << std::endl;
 
-    // If markToFile is provided, create a marked version showing element boxes
-    if (!markToFile.empty()) {
-      try {
-        // Load the image file
-        cv::Mat markedImage = cv::imread(markToFile, cv::IMREAD_COLOR);
-
-        if (markedImage.empty()) {
-          std::cerr << "WARNING: Could not load image file for marking: "
-                    << markToFile << std::endl;
-        } else {
-          // Draw bounding boxes for all elements
-          for (const auto &elem : result.elements) {
-            cv::Scalar color;
-
-            // Use different colors for different element types
-            switch (elem.type) {
-            case RenderedElement::TEXT:
-              color = cv::Scalar(0, 255, 0); // Green for text
-              break;
-            case RenderedElement::IMAGE:
-              color = cv::Scalar(255, 0, 0); // Blue for images
-              break;
-            case RenderedElement::RECTANGLE:
-              color = cv::Scalar(0, 0, 255); // Red for rectangles
-              break;
-            case RenderedElement::LINE:
-              color = cv::Scalar(0, 255, 255); // Yellow for lines
-              break;
-            default:
-              color = cv::Scalar(128, 128, 128); // Gray for unknown
-              break;
-            }
-
-            // Draw unfilled rectangle
-            cv::rectangle(markedImage, cv::Point(elem.pixelX, elem.pixelY),
-                          cv::Point(elem.pixelX + elem.pixelWidth,
-                                    elem.pixelY + elem.pixelHeight),
-                          color, 2); // 2 pixel thickness
-          }
-
-          // Generate output filename with "_marked" suffix
-          std::filesystem::path inputPath(markToFile);
-          std::string stem = inputPath.stem().string();
-          std::string extension = inputPath.extension().string();
-          std::string markedPath = inputPath.parent_path().string() + "/" +
-                                   stem + "_marked" + extension;
-
-          // Save the marked image
-          if (cv::imwrite(markedPath, markedImage)) {
-            std::cerr << "Marked image saved: " << markedPath << std::endl;
-          } else {
-            std::cerr << "WARNING: Failed to save marked image: " << markedPath
-                      << std::endl;
-          }
-        }
-      } catch (const std::exception &e) {
-        std::cerr << "WARNING: Error creating marked image: " << e.what()
-                  << std::endl;
-      }
-    }
+    // Marking is now handled by the separate alignAndMarkElements() function
+    // which provides OCR-aligned bounding boxes
 
     result.success = true;
     return result;
