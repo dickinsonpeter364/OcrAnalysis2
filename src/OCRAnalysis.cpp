@@ -3519,56 +3519,40 @@ bool OCRAnalysis::alignAndMarkElements(const std::string &renderedImagePath,
                 << " OCR word boxes for alignment" << std::endl;
     }
 
-    // Group elements by font size and calculate offset for each group
-    struct FontSizeData {
+    // Store per-element alignment data
+    struct ElementAlignment {
       int offsetX, offsetY, width, height;
+      bool found;
     };
-    std::map<double, FontSizeData> fontSizeOffsets;
+    std::map<size_t, ElementAlignment> elementAlignments; // Index -> alignment
 
     if (!ocrBoxes.empty()) {
-      // Collect unique font sizes
-      std::set<double> fontSizes;
-      for (const auto &elem : renderResult.elements) {
-        if (elem.type == RenderedElement::TEXT && !elem.text.empty()) {
-          fontSizes.insert(elem.fontSize);
-        }
-      }
+      std::cerr << "Performing per-element OCR alignment for "
+                << renderResult.elements.size() << " elements" << std::endl;
 
-      std::cerr << "Found " << fontSizes.size() << " unique font sizes"
-                << std::endl;
+      // For each text element, search for it individually
+      for (size_t elemIdx = 0; elemIdx < renderResult.elements.size();
+           elemIdx++) {
+        const auto &elem = renderResult.elements[elemIdx];
 
-      // For each font size, find a representative element and calculate offset
-      // using ROI
-      for (double fontSize : fontSizes) {
-        // Find first element with this font size as representative
-        const RenderedElement *representative = nullptr;
-        for (const auto &elem : renderResult.elements) {
-          if (elem.type == RenderedElement::TEXT && !elem.text.empty() &&
-              elem.fontSize == fontSize) {
-            representative = &elem;
-            break;
-          }
-        }
-
-        if (!representative)
+        if (elem.type != RenderedElement::TEXT || elem.text.empty()) {
           continue;
+        }
 
-        // Scale representative coordinates to original image space
-        int scaledRepX = static_cast<int>(representative->pixelX * scaleX);
-        int scaledRepY = static_cast<int>(representative->pixelY * scaleY);
-        int scaledRepWidth =
-            static_cast<int>(representative->pixelWidth * scaleX);
-        int scaledRepHeight =
-            static_cast<int>(representative->pixelHeight * scaleY);
+        // Scale element coordinates to original image space
+        int scaledElemX = static_cast<int>(elem.pixelX * scaleX);
+        int scaledElemY = static_cast<int>(elem.pixelY * scaleY);
+        int scaledElemWidth = static_cast<int>(elem.pixelWidth * scaleX);
+        int scaledElemHeight = static_cast<int>(elem.pixelHeight * scaleY);
 
         // Define search region around the expected position (in original image
         // space)
         const int SEARCH_RADIUS = 150; // pixels to search in each direction
-        int roiX = std::max(0, scaledRepX - SEARCH_RADIUS);
-        int roiY = std::max(0, scaledRepY - SEARCH_RADIUS);
-        int roiWidth = std::min(SEARCH_RADIUS * 2 + scaledRepWidth,
+        int roiX = std::max(0, scaledElemX - SEARCH_RADIUS);
+        int roiY = std::max(0, scaledElemY - SEARCH_RADIUS);
+        int roiWidth = std::min(SEARCH_RADIUS * 2 + scaledElemWidth,
                                 originalImage.cols - roiX);
-        int roiHeight = std::min(SEARCH_RADIUS * 2 + scaledRepHeight,
+        int roiHeight = std::min(SEARCH_RADIUS * 2 + scaledElemHeight,
                                  originalImage.rows - roiY);
 
         // Skip if ROI is invalid
@@ -3590,19 +3574,14 @@ bool OCRAnalysis::alignAndMarkElements(const std::string &renderedImagePath,
         roiOcr->SetPageSegMode(tesseract::PSM_SINGLE_BLOCK);
         roiOcr->Recognize(0);
 
-        // Clean representative text for matching
-        std::string repText = representative->text;
-        repText.erase(
-            std::remove_if(repText.begin(), repText.end(),
+        // Clean element text for matching
+        std::string elemText = elem.text;
+        elemText.erase(
+            std::remove_if(elemText.begin(), elemText.end(),
                            [](unsigned char c) { return std::isspace(c); }),
-            repText.end());
-        std::transform(repText.begin(), repText.end(), repText.begin(),
+            elemText.end());
+        std::transform(elemText.begin(), elemText.end(), elemText.begin(),
                        [](unsigned char c) { return std::tolower(c); });
-
-        std::cerr << "DEBUG: Searching for \"" << repText << "\" in ROI at ("
-                  << roiX << "," << roiY << ") size " << roiWidth << "x"
-                  << roiHeight << ", scaled rep pos (" << scaledRepX << ","
-                  << scaledRepY << ")" << std::endl;
 
         // Find matching text in ROI
         tesseract::ResultIterator *roiRi = roiOcr->GetIterator();
@@ -3628,10 +3607,7 @@ bool OCRAnalysis::alignAndMarkElements(const std::string &renderedImagePath,
                              cleanWord.begin(),
                              [](unsigned char c) { return std::tolower(c); });
 
-              std::cerr << "DEBUG ROI: Found word \"" << cleanWord << "\""
-                        << std::endl;
-
-              // Calculate similarity between cleanWord and repText
+              // Calculate similarity between cleanWord and elemText
               auto calculateSimilarity = [](const std::string &s1,
                                             const std::string &s2) -> double {
                 if (s1.empty() || s2.empty())
@@ -3646,13 +3622,13 @@ bool OCRAnalysis::alignAndMarkElements(const std::string &renderedImagePath,
                 return static_cast<double>(matches) / maxLen;
               };
 
-              double similarity = calculateSimilarity(cleanWord, repText);
+              double similarity = calculateSimilarity(cleanWord, elemText);
 
               // Check if text matches (exact, substring, or fuzzy)
               bool textMatches =
-                  (cleanWord == repText) ||
-                  (cleanWord.find(repText) != std::string::npos) ||
-                  (repText.find(cleanWord) != std::string::npos) ||
+                  (cleanWord == elemText) ||
+                  (cleanWord.find(elemText) != std::string::npos) ||
+                  (elemText.find(cleanWord) != std::string::npos) ||
                   (similarity >= 0.7); // 70% similarity threshold
 
               if (textMatches) {
@@ -3664,14 +3640,14 @@ bool OCRAnalysis::alignAndMarkElements(const std::string &renderedImagePath,
                 int absY = roiY + y1;
 
                 // Calculate offset in original image space
-                double dx = absX - scaledRepX;
-                double dy = absY - scaledRepY;
+                double dx = absX - scaledElemX;
+                double dy = absY - scaledElemY;
                 double distance = std::sqrt(dx * dx + dy * dy);
 
                 if (distance < bestDistance) {
                   bestDistance = distance;
-                  bestOffsetX = absX - scaledRepX;
-                  bestOffsetY = absY - scaledRepY;
+                  bestOffsetX = absX - scaledElemX;
+                  bestOffsetY = absY - scaledElemY;
                   bestOcrWidth = x2 - x1;
                   bestOcrHeight = y2 - y1;
                   foundMatch = true;
@@ -3688,18 +3664,14 @@ bool OCRAnalysis::alignAndMarkElements(const std::string &renderedImagePath,
         delete roiOcr;
 
         if (foundMatch) {
-          fontSizeOffsets[fontSize] = {bestOffsetX, bestOffsetY, bestOcrWidth,
-                                       bestOcrHeight};
-          std::cerr << "Font size " << fontSize << "pt: offset (" << bestOffsetX
-                    << ", " << bestOffsetY << "), OCR size: " << bestOcrWidth
-                    << "x" << bestOcrHeight << ", distance: " << bestDistance
-                    << " (ROI search)" << std::endl;
+          elementAlignments[elemIdx] = {bestOffsetX, bestOffsetY, bestOcrWidth,
+                                        bestOcrHeight, true};
+          std::cerr << "Element " << elemIdx << " \"" << elem.text.substr(0, 20)
+                    << "\": offset (" << bestOffsetX << ", " << bestOffsetY
+                    << "), OCR size: " << bestOcrWidth << "x" << bestOcrHeight
+                    << ", distance: " << bestDistance << std::endl;
         } else {
-          // No match found in ROI, use zero offset and original size
-          fontSizeOffsets[fontSize] = {0, 0, -1,
-                                       -1}; // -1 means use original size
-          std::cerr << "Font size " << fontSize
-                    << "pt: no match in ROI, using zero offset" << std::endl;
+          elementAlignments[elemIdx] = {0, 0, -1, -1, false};
         }
       }
     }
@@ -3712,7 +3684,10 @@ bool OCRAnalysis::alignAndMarkElements(const std::string &renderedImagePath,
     int drawnCount = 0;
     int alignedCount = 0;
 
-    for (const auto &elem : renderResult.elements) {
+    for (size_t elemIdx = 0; elemIdx < renderResult.elements.size();
+         elemIdx++) {
+      const auto &elem = renderResult.elements[elemIdx];
+
       // Only process text elements
       if (elem.type != RenderedElement::TEXT || elem.text.empty()) {
         continue;
@@ -3731,8 +3706,8 @@ bool OCRAnalysis::alignAndMarkElements(const std::string &renderedImagePath,
       int boxWidth = scaledElemWidth;
       int boxHeight = scaledElemHeight;
 
-      auto it = fontSizeOffsets.find(elem.fontSize);
-      if (it != fontSizeOffsets.end()) {
+      auto it = elementAlignments.find(elemIdx);
+      if (it != elementAlignments.end() && it->second.found) {
         adjustedX = scaledElemX + it->second.offsetX;
         adjustedY = scaledElemY + it->second.offsetY;
         // Use OCR height if available (height > 0), but keep original width
@@ -3771,7 +3746,6 @@ bool OCRAnalysis::alignAndMarkElements(const std::string &renderedImagePath,
                 << std::endl;
       return false;
     }
-
   } catch (const std::exception &e) {
     std::cerr << "ERROR in alignAndMarkElements: " << e.what() << std::endl;
     return false;
