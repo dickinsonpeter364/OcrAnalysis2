@@ -24,11 +24,18 @@ enum class TextOrientation {
  * @brief Represents a detected text region with its bounding box and confidence
  */
 struct TextRegion {
-  cv::Rect boundingBox; ///< Bounding rectangle of the text region
+  cv::Rect boundingBox; ///< Bounding rectangle of the text region (integer)
   std::string text;     ///< Recognized text content
   float confidence;     ///< Confidence score (0-100)
   int level;            ///< Hierarchy level (word, line, paragraph, block)
   TextOrientation orientation; ///< Detected text orientation
+
+  // High-precision PDF coordinates (doubles, before integer truncation)
+  // These preserve sub-point accuracy from Poppler extraction.
+  double preciseX = 0.0;      ///< X position in points (double precision)
+  double preciseY = 0.0;      ///< Y position in points (double precision)
+  double preciseWidth = 0.0;  ///< Width in points (double precision)
+  double preciseHeight = 0.0; ///< Height in points (double precision)
 
   // Font information (from PDF extraction)
   std::string fontName = ""; ///< Font family name

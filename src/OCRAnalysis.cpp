@@ -289,6 +289,11 @@ OCRResult OCRAnalysis::extractTextFromPDF(const std::string &pdfPath,
             region.boundingBox =
                 cv::Rect(static_cast<int>(x), static_cast<int>(y),
                          static_cast<int>(width), static_cast<int>(height));
+            // Store high-precision coordinates for accurate calculations
+            region.preciseX = x;
+            region.preciseY = y;
+            region.preciseWidth = width;
+            region.preciseHeight = height;
 
             // Extract font information
             // Note: Poppler's get_font_name() and get_font_size() may not be

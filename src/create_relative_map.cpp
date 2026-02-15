@@ -34,6 +34,17 @@ static std::string normaliseForMatch(const std::string &s) {
 }
 
 /**
+ * @brief Check if a string is mostly comprised of underscores.
+ *        Returns true if more than half the characters are underscores.
+ */
+static bool isMostlyUnderscores(const std::string &s) {
+  if (s.empty())
+    return false;
+  size_t underscoreCount = std::count(s.begin(), s.end(), '_');
+  return underscoreCount > s.size() / 2;
+}
+
+/**
  * @brief Run Tesseract OCR on an image and return all detected words with their
  *        pixel bounding boxes.
  */
@@ -272,7 +283,11 @@ OCRAnalysis::createRelativeMap(const PDFElements &elements,
       maxY = std::numeric_limits<double>::lowest();
 
       // Check all elements to find actual bounds
+      // (skip text that is mostly underscores)
       for (const auto &text : elements.textLines) {
+        if (isMostlyUnderscores(text.text))
+          continue;
+
         double textX = text.boundingBox.x;
         double textY = text.boundingBox.y;
         double textWidth = text.boundingBox.width;
@@ -311,23 +326,28 @@ OCRAnalysis::createRelativeMap(const PDFElements &elements,
     // Convert text elements to relative coordinates (using centre point)
     for (const auto &text : elements.textLines) {
       // Skip text that is mostly underscores (e.g. "_____________________")
-      if (!text.text.empty()) {
-        size_t underscoreCount =
-            std::count(text.text.begin(), text.text.end(), '_');
-        if (underscoreCount > text.text.size() / 2) {
-          continue;
-        }
+      if (isMostlyUnderscores(text.text)) {
+        continue;
       }
 
       RelativeElement elem;
       elem.type = RelativeElement::TEXT;
 
-      double textX = text.boundingBox.x;
-      double textY = text.boundingBox.y;
-      double textWidth = text.boundingBox.width;
-      double textHeight = text.boundingBox.height;
+      // Use high-precision coordinates if available, otherwise fall back
+      // to the integer-truncated boundingBox values.
+      double textX =
+          (text.preciseWidth > 0) ? text.preciseX : text.boundingBox.x;
+      double textY =
+          (text.preciseWidth > 0) ? text.preciseY : text.boundingBox.y;
+      double textWidth =
+          (text.preciseWidth > 0) ? text.preciseWidth : text.boundingBox.width;
+      double textHeight = (text.preciseHeight > 0) ? text.preciseHeight
+                                                   : text.boundingBox.height;
 
-      // Convert from bottom-left to top-left origin
+      // The text boundingBox.y was converted to top-left origin during PDF
+      // extraction, but the bounds (minY/maxY) were also converted from
+      // PDF coordinates. We need to flip Y relative to the bounds so that
+      // elements at the visual top of the bounds get small relative Y values.
       double topLeftY = result.boundsHeight - (textY - minY + textHeight);
 
       // Calculate relative width and height
@@ -353,8 +373,13 @@ OCRAnalysis::createRelativeMap(const PDFElements &elements,
       RelativeElement elem;
       elem.type = RelativeElement::IMAGE;
 
-      // Convert to top-left origin
-      double topLeftY =
+      // Image coordinates ARE in PDF bottom-left origin, so need Y-flip.
+      // Convert to top-left: topLeftY = pageHeight - (img.y +
+      // img.displayHeight) But relative to bounds: use the same approach as
+      // renderElementsToPNG:
+      //   y = pageHeightPt - (img.y - minY + img.displayHeight)
+      // In our case pageHeightPt = boundsHeight, and we want relative coords:
+      double imgTopLeftY =
           result.boundsHeight - (img.y - minY + img.displayHeight);
 
       // Calculate relative width and height
@@ -365,7 +390,7 @@ OCRAnalysis::createRelativeMap(const PDFElements &elements,
       elem.relativeX =
           (img.x - minX + img.displayWidth / 2.0) / result.boundsWidth;
       elem.relativeY =
-          (topLeftY + img.displayHeight / 2.0) / result.boundsHeight;
+          (imgTopLeftY + img.displayHeight / 2.0) / result.boundsHeight;
 
       result.elements.push_back(elem);
     }
@@ -605,13 +630,15 @@ OCRAnalysis::createRelativeMap(const PDFElements &elements,
           }
 
           // Convert from centre-based relative coords to pixel top-left
-          int pixelWidth = static_cast<int>(elem.relativeWidth * canvasWidth);
+          // Use std::round instead of truncation for more accurate positioning
+          int pixelWidth =
+              static_cast<int>(std::round(elem.relativeWidth * canvasWidth));
           int pixelHeight =
-              static_cast<int>(elem.relativeHeight * canvasHeight);
-          int pixelX = static_cast<int>(
-              (elem.relativeX - elem.relativeWidth / 2.0) * canvasWidth);
-          int pixelY = static_cast<int>(
-              (elem.relativeY - elem.relativeHeight / 2.0) * canvasHeight);
+              static_cast<int>(std::round(elem.relativeHeight * canvasHeight));
+          int pixelX = static_cast<int>(std::round(
+              (elem.relativeX - elem.relativeWidth / 2.0) * canvasWidth));
+          int pixelY = static_cast<int>(std::round(
+              (elem.relativeY - elem.relativeHeight / 2.0) * canvasHeight));
 
           // Clamp to image bounds
           int drawX1 = std::max(0, std::min(pixelX, canvasWidth - 1));
