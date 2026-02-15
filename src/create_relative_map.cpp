@@ -310,6 +310,15 @@ OCRAnalysis::createRelativeMap(const PDFElements &elements,
 
     // Convert text elements to relative coordinates (using centre point)
     for (const auto &text : elements.textLines) {
+      // Skip text that is mostly underscores (e.g. "_____________________")
+      if (!text.text.empty()) {
+        size_t underscoreCount =
+            std::count(text.text.begin(), text.text.end(), '_');
+        if (underscoreCount > text.text.size() / 2) {
+          continue;
+        }
+      }
+
       RelativeElement elem;
       elem.type = RelativeElement::TEXT;
 
