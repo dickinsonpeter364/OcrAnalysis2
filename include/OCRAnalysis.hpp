@@ -501,15 +501,21 @@ public:
    *
    * All coordinates are fractions (0.0 to 1.0) relative to the calculated
    * rectangle bounds (crop marks or largest rectangle), with origin at
-   * top-left.
+   * top-left. The X/Y position represents the CENTRE of the box, so that
+   * when mapping to a different canvas size the box can be resized
+   * symmetrically around its centre point.
+   *
+   * To reconstruct the top-left corner on a target canvas:
+   *   topLeftX = (relativeX - relativeWidth / 2) * canvasWidth
+   *   topLeftY = (relativeY - relativeHeight / 2) * canvasHeight
    */
   struct RelativeElement {
     enum Type { TEXT, IMAGE, RECTANGLE, LINE };
 
     Type type;
-    double relativeX; ///< X position as fraction of rectangle width (0.0 = left
+    double relativeX; ///< X centre as fraction of rectangle width (0.0 = left
                       ///< edge)
-    double relativeY; ///< Y position as fraction of rectangle height (0.0 = top
+    double relativeY; ///< Y centre as fraction of rectangle height (0.0 = top
                       ///< edge)
     double relativeWidth;  ///< Width as fraction of rectangle width
     double relativeHeight; ///< Height as fraction of rectangle height
@@ -547,8 +553,8 @@ public:
    * Uses the same crop marks or largest rectangle logic as renderElementsToPNG
    * to determine the bounds, then returns all text and image element positions
    * and sizes as fractions (0.0 to 1.0) relative to those bounds with origin
-   * at top-left. This creates a resolution-independent coordinate system that
-   * can be applied to images of any size.
+   * at top-left. Positions are given as the CENTRE of each box so that
+   * resizing on a different canvas is symmetrical.
    *
    * @param elements The extracted PDF elements
    * @param boundsMode Mode for determining bounds (USE_CROP_MARKS or

@@ -120,7 +120,7 @@ OCRAnalysis::createRelativeMap(const PDFElements &elements,
     std::cerr << "  Width: " << result.boundsWidth
               << " pt, Height: " << result.boundsHeight << " pt" << std::endl;
 
-    // Convert text elements to relative coordinates
+    // Convert text elements to relative coordinates (using centre point)
     for (const auto &text : elements.textLines) {
       RelativeElement elem;
       elem.type = RelativeElement::TEXT;
@@ -135,11 +135,13 @@ OCRAnalysis::createRelativeMap(const PDFElements &elements,
       // Convert from bottom-left to top-left origin
       double topLeftY = result.boundsHeight - (textY - minY + textHeight);
 
-      // Calculate relative coordinates (0.0 to 1.0)
-      elem.relativeX = (textX - minX) / result.boundsWidth;
-      elem.relativeY = topLeftY / result.boundsHeight;
+      // Calculate relative width and height
       elem.relativeWidth = textWidth / result.boundsWidth;
       elem.relativeHeight = textHeight / result.boundsHeight;
+
+      // Calculate relative centre coordinates (0.0 to 1.0)
+      elem.relativeX = (textX - minX + textWidth / 2.0) / result.boundsWidth;
+      elem.relativeY = (topLeftY + textHeight / 2.0) / result.boundsHeight;
 
       // Copy text-specific fields
       elem.text = text.text;
@@ -151,7 +153,7 @@ OCRAnalysis::createRelativeMap(const PDFElements &elements,
       result.elements.push_back(elem);
     }
 
-    // Convert image elements to relative coordinates
+    // Convert image elements to relative coordinates (using centre point)
     for (const auto &img : elements.images) {
       RelativeElement elem;
       elem.type = RelativeElement::IMAGE;
@@ -161,11 +163,15 @@ OCRAnalysis::createRelativeMap(const PDFElements &elements,
       double topLeftY =
           result.boundsHeight - (img.y - minY + img.displayHeight);
 
-      // Calculate relative coordinates (0.0 to 1.0)
-      elem.relativeX = (img.x - minX) / result.boundsWidth;
-      elem.relativeY = topLeftY / result.boundsHeight;
+      // Calculate relative width and height
       elem.relativeWidth = img.displayWidth / result.boundsWidth;
       elem.relativeHeight = img.displayHeight / result.boundsHeight;
+
+      // Calculate relative centre coordinates (0.0 to 1.0)
+      elem.relativeX =
+          (img.x - minX + img.displayWidth / 2.0) / result.boundsWidth;
+      elem.relativeY =
+          (topLeftY + img.displayHeight / 2.0) / result.boundsHeight;
 
       result.elements.push_back(elem);
     }
