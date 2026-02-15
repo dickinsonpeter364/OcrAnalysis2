@@ -1,5 +1,6 @@
 #include "OCRAnalysis.hpp"
 #include <algorithm>
+#include <filesystem>
 #include <iostream>
 #include <limits>
 
@@ -7,7 +8,8 @@ namespace ocr {
 
 OCRAnalysis::RelativeMapResult
 OCRAnalysis::createRelativeMap(const PDFElements &elements,
-                               RenderBoundsMode boundsMode) {
+                               RenderBoundsMode boundsMode, double dpi,
+                               const std::string &markToFile) {
   OCRAnalysis::RelativeMapResult result;
 
   try {
@@ -83,8 +85,6 @@ OCRAnalysis::createRelativeMap(const PDFElements &elements,
 
       // Check all elements to find actual bounds
       for (const auto &text : elements.textLines) {
-        // Text uses bottom-left origin (already converted in
-        // extractTextFromPDF)
         double textX = text.boundingBox.x;
         double textY = text.boundingBox.y;
         double textWidth = text.boundingBox.width;
@@ -125,8 +125,6 @@ OCRAnalysis::createRelativeMap(const PDFElements &elements,
       RelativeElement elem;
       elem.type = RelativeElement::TEXT;
 
-      // Text uses bottom-left origin (already converted in extractTextFromPDF)
-      // Convert to top-left origin for consistency
       double textX = text.boundingBox.x;
       double textY = text.boundingBox.y;
       double textWidth = text.boundingBox.width;
@@ -158,7 +156,6 @@ OCRAnalysis::createRelativeMap(const PDFElements &elements,
       RelativeElement elem;
       elem.type = RelativeElement::IMAGE;
 
-      // Images use bottom-left origin
       // Convert to top-left origin
       double topLeftY =
           result.boundsHeight - (img.y - minY + img.displayHeight);
@@ -182,6 +179,79 @@ OCRAnalysis::createRelativeMap(const PDFElements &elements,
               << std::endl;
     std::cerr << "  " << elements.images.size() << " image elements"
               << std::endl;
+
+    // If markToFile is provided, draw bounding boxes on the image
+    if (!markToFile.empty()) {
+      cv::Mat targetImage = cv::imread(markToFile);
+      if (targetImage.empty()) {
+        std::cerr << "Warning: Could not load image for marking: " << markToFile
+                  << std::endl;
+      } else {
+        int canvasWidth = targetImage.cols;
+        int canvasHeight = targetImage.rows;
+
+        std::cerr << "Marking image " << markToFile << " (" << canvasWidth
+                  << "x" << canvasHeight << ")" << std::endl;
+
+        cv::Mat markedImage = targetImage.clone();
+        cv::Scalar blueColor(255, 0, 0);  // Blue in BGR (for text)
+        cv::Scalar greenColor(0, 255, 0); // Green in BGR (for images)
+        int drawnCount = 0;
+
+        for (const auto &elem : result.elements) {
+          // Convert from centre-based relative coords to pixel top-left
+          int pixelWidth = static_cast<int>(elem.relativeWidth * canvasWidth);
+          int pixelHeight =
+              static_cast<int>(elem.relativeHeight * canvasHeight);
+          int pixelX = static_cast<int>(
+              (elem.relativeX - elem.relativeWidth / 2.0) * canvasWidth);
+          int pixelY = static_cast<int>(
+              (elem.relativeY - elem.relativeHeight / 2.0) * canvasHeight);
+
+          // Clamp to image bounds
+          int drawX1 = std::max(0, std::min(pixelX, canvasWidth));
+          int drawY1 = std::max(0, std::min(pixelY, canvasHeight));
+          int drawX2 = std::max(0, std::min(pixelX + pixelWidth, canvasWidth));
+          int drawY2 =
+              std::max(0, std::min(pixelY + pixelHeight, canvasHeight));
+
+          if (drawX2 > drawX1 && drawY2 > drawY1) {
+            cv::Scalar color =
+                (elem.type == RelativeElement::TEXT) ? blueColor : greenColor;
+            cv::rectangle(markedImage, cv::Point(drawX1, drawY1),
+                          cv::Point(drawX2, drawY2), color, 2);
+            drawnCount++;
+
+            // Log element details
+            if (elem.type == RelativeElement::TEXT) {
+              std::cerr << "  Text \"" << elem.text << "\": (" << drawX1 << ","
+                        << drawY1 << ") " << (drawX2 - drawX1) << "x"
+                        << (drawY2 - drawY1) << std::endl;
+            } else {
+              std::cerr << "  Image: (" << drawX1 << "," << drawY1 << ") "
+                        << (drawX2 - drawX1) << "x" << (drawY2 - drawY1)
+                        << std::endl;
+            }
+          }
+        }
+
+        std::cerr << "Drew " << drawnCount << " boxes on image" << std::endl;
+
+        // Save with _relmap suffix
+        std::filesystem::path markPath(markToFile);
+        std::string outputPath = markPath.parent_path().string() + "/" +
+                                 markPath.stem().string() + "_relmap" +
+                                 markPath.extension().string();
+
+        if (cv::imwrite(outputPath, markedImage)) {
+          std::cerr << "Relative map marked image saved: " << outputPath
+                    << std::endl;
+        } else {
+          std::cerr << "ERROR: Failed to save marked image: " << outputPath
+                    << std::endl;
+        }
+      }
+    }
 
     result.success = true;
     return result;

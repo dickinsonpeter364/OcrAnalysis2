@@ -556,14 +556,23 @@ public:
    * at top-left. Positions are given as the CENTRE of each box so that
    * resizing on a different canvas is symmetrical.
    *
+   * If markToFile is provided, loads that image and draws bounding boxes
+   * over it using the relative coordinates scaled by the image dimensions,
+   * saving the result with a "_relmap" suffix.
+   *
    * @param elements The extracted PDF elements
    * @param boundsMode Mode for determining bounds (USE_CROP_MARKS or
    * USE_LARGEST_RECTANGLE)
+   * @param dpi Resolution in dots per inch (used for output filename, default:
+   * 300)
+   * @param markToFile Optional path to an image file to mark with element
+   * bounding boxes (default: empty = no marking)
    * @return RelativeMapResult containing elements in relative coordinates
    */
   RelativeMapResult createRelativeMap(
       const PDFElements &elements,
-      RenderBoundsMode boundsMode = RenderBoundsMode::USE_CROP_MARKS);
+      RenderBoundsMode boundsMode = RenderBoundsMode::USE_CROP_MARKS,
+      double dpi = 300.0, const std::string &markToFile = "");
 
   /**
    * @brief Align elements using OCR and create marked image with adjusted boxes
