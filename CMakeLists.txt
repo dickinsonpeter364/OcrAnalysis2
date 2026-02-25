@@ -25,6 +25,17 @@ else()
     message(STATUS "Cairo not found - PDF rendering will use text-based fallback")
 endif()
 
+# ZXing-cpp for barcode / DataMatrix detection
+set(ZXING_SOURCE_DIR "C:/zxing-cpp")
+set(ZXING_LIB_DIR "${ZXING_SOURCE_DIR}/build/core/Debug")
+if(EXISTS "${ZXING_LIB_DIR}/ZXing.lib")
+    message(STATUS "ZXing found at ${ZXING_SOURCE_DIR}")
+    set(ZXING_FOUND TRUE)
+else()
+    message(STATUS "ZXing not found - DataMatrix detection will be disabled")
+    set(ZXING_FOUND FALSE)
+endif()
+
 # Print package information
 message(STATUS "OpenCV version: ${OpenCV_VERSION}")
 message(STATUS "OpenCV include dirs: ${OpenCV_INCLUDE_DIRS}")
@@ -53,6 +64,14 @@ if(CAIRO_FOUND)
     target_compile_definitions(ocr_analysis PUBLIC HAVE_CAIRO)
 endif()
 
+if(ZXING_FOUND)
+    target_include_directories(ocr_analysis PUBLIC
+        ${ZXING_SOURCE_DIR}/core/src
+        ${ZXING_SOURCE_DIR}/example
+    )
+    target_compile_definitions(ocr_analysis PUBLIC HAVE_ZXING)
+endif()
+
 target_link_libraries(ocr_analysis
     PUBLIC
         ${OpenCV_LIBS}
@@ -64,6 +83,10 @@ target_link_libraries(ocr_analysis
 
 if(CAIRO_FOUND)
     target_link_libraries(ocr_analysis PUBLIC ${CAIRO_LIBRARIES})
+endif()
+
+if(ZXING_FOUND)
+    target_link_libraries(ocr_analysis PUBLIC ${ZXING_LIB_DIR}/ZXing.lib)
 endif()
 
 target_link_directories(ocr_analysis
@@ -220,6 +243,16 @@ add_executable(test_sort_elements
 )
 
 target_link_libraries(test_sort_elements
+    PRIVATE
+        ocr_analysis
+)
+
+# Define the find images test executable
+add_executable(test_find_images
+    src/test_find_images.cpp
+)
+
+target_link_libraries(test_find_images
     PRIVATE
         ocr_analysis
 )

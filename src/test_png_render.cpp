@@ -1,40 +1,88 @@
 #include "OCRAnalysis.hpp"
+#include <algorithm>
+#include <filesystem>
 #include <iomanip>
 #include <iostream>
+#include <sstream>
 
 int main(int argc, char *argv[]) {
   std::cout << "=== PDF to PNG Rendering Test ===" << std::endl << std::endl;
 
   // Check for PDF file argument
   if (argc < 2) {
-    std::cerr << "Usage: " << argv[0] << " <pdf_file> [dpi] [output_dir]"
-              << std::endl;
+    std::cerr << "Usage: " << argv[0]
+              << " <pdf_file> [dpi] [output_dir] [bounds_mode]" << std::endl;
     std::cerr << "  dpi: Resolution in dots per inch (default: 300)"
               << std::endl;
     std::cerr << "  output_dir: Directory to save PNG (default: images)"
               << std::endl;
+    std::cerr << "  bounds_mode: 'crop' (default) or 'rect' for largest "
+                 "rectangle"
+              << std::endl;
     std::cerr << std::endl;
-    std::cerr << "Example: " << argv[0] << " document.pdf 600 output"
+    std::cerr << "Example: " << argv[0] << " document.pdf 600 output rect"
               << std::endl;
     return 1;
   }
 
   std::string pdfPath = argv[1];
-  double dpi = (argc >= 3) ? std::stod(argv[2]) : 300.0;
-  std::string outputDir = (argc >= 4) ? argv[3] : "images";
+  double dpi = 300.0;
+  std::string outputDir = "images";
+
+  // Auto-detect bounds mode from filename:
+  // L2* files have crop marks; all others use largest rectangle
+  std::string stem = std::filesystem::path(pdfPath).stem().string();
+  ocr::OCRAnalysis::RenderBoundsMode boundsMode =
+      (stem.size() >= 2 && stem[0] == 'L' && stem[1] == '2')
+          ? ocr::OCRAnalysis::RenderBoundsMode::USE_CROP_MARKS
+          : ocr::OCRAnalysis::RenderBoundsMode::USE_LARGEST_RECTANGLE;
+
+  // Parse remaining arguments flexibly (order doesn't matter)
+  for (int i = 2; i < argc; i++) {
+    std::string arg = argv[i];
+    std::string argLower = arg;
+    std::transform(argLower.begin(), argLower.end(), argLower.begin(),
+                   ::tolower);
+
+    // Check if it's a bounds mode keyword
+    if (argLower == "rect" || argLower == "rectangle") {
+      boundsMode = ocr::OCRAnalysis::RenderBoundsMode::USE_LARGEST_RECTANGLE;
+    } else if (argLower == "crop") {
+      boundsMode = ocr::OCRAnalysis::RenderBoundsMode::USE_CROP_MARKS;
+    }
+    // Check if it's a number (DPI)
+    else if (arg.find_first_not_of("0123456789.") == std::string::npos) {
+      try {
+        dpi = std::stod(arg);
+      } catch (...) {
+        std::cerr << "Warning: Could not parse DPI '" << arg
+                  << "', using default 300" << std::endl;
+      }
+    }
+    // Otherwise treat as output directory
+    else {
+      outputDir = arg;
+    }
+  }
+
+  std::string modeStr =
+      (boundsMode == ocr::OCRAnalysis::RenderBoundsMode::USE_LARGEST_RECTANGLE)
+          ? "USE_LARGEST_RECTANGLE"
+          : "USE_CROP_MARKS";
 
   std::cout << "PDF file: " << pdfPath << std::endl;
   std::cout << "DPI: " << dpi << std::endl;
   std::cout << "Output directory: " << outputDir << std::endl;
+  std::cout << "Bounds mode: " << modeStr << std::endl;
   std::cout << std::endl;
 
   // Create OCR analyzer
   ocr::OCRAnalysis analyzer;
 
-  // Extract elements from PDF
+  // Extract elements from PDF (and save images to output dir)
   std::cout << "Extracting elements from PDF..." << std::endl;
   ocr::OCRAnalysis::PDFElements elements =
-      analyzer.extractPDFElements(pdfPath, 5.0, 5.0);
+      analyzer.extractPDFElements(pdfPath, 5.0, 5.0, outputDir);
 
   if (!elements.success) {
     std::cerr << "Failed to extract elements: " << elements.errorMessage
@@ -45,18 +93,47 @@ int main(int argc, char *argv[]) {
   std::cout << "Extracted elements:" << std::endl;
   std::cout << "  Text lines: " << elements.textLineCount << std::endl;
   std::cout << "  Images: " << elements.imageCount << std::endl;
+  std::cout << "  DataMatrix: " << elements.dataMatrixCount << std::endl;
   std::cout << "  Rectangles: " << elements.rectangleCount << std::endl;
   std::cout << "  Lines: " << elements.graphicLineCount << std::endl;
   std::cout << std::endl;
 
-  // Debug: Show all extracted images
-  std::cout << "DEBUG: All extracted images:" << std::endl;
-  for (size_t i = 0; i < elements.images.size(); i++) {
-    const auto &img = elements.images[i];
-    std::cout << "  Image " << (i + 1) << ": x=" << img.x << ", y=" << img.y
-              << ", w=" << img.displayWidth << ", h=" << img.displayHeight
-              << std::endl;
+  // Display extracted images
+  if (!elements.images.empty()) {
+    std::cout << "Extracted images:" << std::endl;
+    for (size_t i = 0; i < elements.images.size(); i++) {
+      const auto &img = elements.images[i];
+      std::cout << "  Image " << (i + 1) << ": x=" << img.x << ", y=" << img.y
+                << ", w=" << img.displayWidth << ", h=" << img.displayHeight;
+      if (!img.image.empty()) {
+        std::cout << ", pixels=" << img.image.cols << "x" << img.image.rows
+                  << ", channels=" << img.image.channels();
+      } else {
+        std::cout << ", (empty)";
+      }
+      std::cout << std::endl;
+    }
+    std::cout << std::endl;
   }
+
+  // Display DataMatrix barcodes
+  if (!elements.dataMatrices.empty()) {
+    std::cout << "Detected DataMatrix barcodes:" << std::endl;
+    for (size_t i = 0; i < elements.dataMatrices.size(); i++) {
+      const auto &dm = elements.dataMatrices[i];
+      std::cout << "  DataMatrix " << (i + 1) << ": \"" << dm.text << "\""
+                << ", x=" << dm.x << ", y=" << dm.y << ", w=" << dm.width
+                << ", h=" << dm.height << ", source=";
+      if (dm.sourceImageIndex >= 0) {
+        std::cout << "image_" << (dm.sourceImageIndex + 1);
+      } else {
+        std::cout << "rasterised_page";
+      }
+      std::cout << std::endl;
+    }
+    std::cout << std::endl;
+  }
+
   std::cout << "DEBUG: linesBoundingBox: x=" << elements.linesBoundingBoxX
             << ", y=" << elements.linesBoundingBoxY
             << ", w=" << elements.linesBoundingBoxWidth
@@ -65,8 +142,8 @@ int main(int argc, char *argv[]) {
 
   // Render to PNG
   std::cout << "Rendering to PNG..." << std::endl;
-  ocr::OCRAnalysis::PNGRenderResult result =
-      analyzer.renderElementsToPNG(elements, pdfPath, dpi, outputDir);
+  ocr::OCRAnalysis::PNGRenderResult result = analyzer.renderElementsToPNG(
+      elements, pdfPath, dpi, outputDir, boundsMode);
 
   if (!result.success) {
     std::cerr << "Failed to render PNG: " << result.errorMessage << std::endl;
@@ -88,7 +165,8 @@ int main(int argc, char *argv[]) {
   std::cout << std::endl;
 
   // Count elements by type
-  int textCount = 0, imageCount = 0, rectCount = 0, lineCount = 0;
+  int textCount = 0, imageCount = 0, rectCount = 0, lineCount = 0,
+      dataMatrixCount = 0;
   for (const auto &elem : result.elements) {
     switch (elem.type) {
     case ocr::OCRAnalysis::RenderedElement::TEXT:
@@ -103,6 +181,9 @@ int main(int argc, char *argv[]) {
     case ocr::OCRAnalysis::RenderedElement::LINE:
       lineCount++;
       break;
+    case ocr::OCRAnalysis::RenderedElement::DATAMATRIX:
+      dataMatrixCount++;
+      break;
     }
   }
 
@@ -111,85 +192,131 @@ int main(int argc, char *argv[]) {
   std::cout << "  Image elements: " << imageCount << std::endl;
   std::cout << "  Rectangle elements: " << rectCount << std::endl;
   std::cout << "  Line elements: " << lineCount << std::endl;
+  std::cout << "  DataMatrix elements: " << dataMatrixCount << std::endl;
   std::cout << std::endl;
 
-  // Display first few text elements with pixel coordinates
-  std::cout << "First 10 text elements (with pixel coordinates):" << std::endl;
-  std::cout
-      << "+------+--------+--------+-------+--------+----------------------+"
-      << std::endl;
-  std::cout
-      << "| #    | X (px) | Y (px) | W(px) | H (px) | Text                 |"
-      << std::endl;
-  std::cout
-      << "+------+--------+--------+-------+--------+----------------------+"
-      << std::endl;
-
-  int count = 0;
-  for (const auto &elem : result.elements) {
-    if (elem.type == ocr::OCRAnalysis::RenderedElement::TEXT && count < 10) {
-      std::string displayText = elem.text;
-      if (displayText.length() > 20) {
-        displayText = displayText.substr(0, 17) + "...";
-      }
-
-      std::cout << "| " << std::setw(4) << std::left << count + 1 << " | "
-                << std::setw(6) << std::right << elem.pixelX << " | "
-                << std::setw(6) << elem.pixelY << " | " << std::setw(5)
-                << elem.pixelWidth << " | " << std::setw(6) << elem.pixelHeight
-                << " | " << std::setw(20) << std::left << displayText << " |"
-                << std::endl;
-      count++;
-    }
-  }
-  std::cout
-      << "+------+--------+--------+-------+--------+----------------------+"
-      << std::endl;
-  std::cout << std::endl;
-
-  // Display image elements
-  if (imageCount > 0) {
-    std::cout << "Image elements (with pixel coordinates):" << std::endl;
-    std::cout << "+------+--------+--------+-------+--------+----------+"
-              << std::endl;
-    std::cout << "| #    | X (px) | Y (px) | W(px) | H (px) | Channels |"
-              << std::endl;
-    std::cout << "+------+--------+--------+-------+--------+----------+"
-              << std::endl;
-
-    count = 0;
+  // Display DataMatrix barcodes if any
+  if (dataMatrixCount > 0) {
+    std::cout << "DataMatrix barcodes detected:" << std::endl;
+    int idx = 0;
     for (const auto &elem : result.elements) {
-      if (elem.type == ocr::OCRAnalysis::RenderedElement::IMAGE) {
-        int channels = elem.image.empty() ? 0 : elem.image.channels();
-        std::cout << "| " << std::setw(4) << std::left << count + 1 << " | "
-                  << std::setw(6) << std::right << elem.pixelX << " | "
-                  << std::setw(6) << elem.pixelY << " | " << std::setw(5)
-                  << elem.pixelWidth << " | " << std::setw(6)
-                  << elem.pixelHeight << " | " << std::setw(8) << channels
-                  << " |" << std::endl;
-        count++;
+      if (elem.type == ocr::OCRAnalysis::RenderedElement::DATAMATRIX) {
+        idx++;
+        std::cout << "  " << idx << ". \"" << elem.barcodeText << "\"";
+        std::cout << "  centre=(" << std::fixed << std::setprecision(4)
+                  << elem.relativeX << ", " << elem.relativeY << ")";
+        std::cout << "  size=(" << elem.relativeWidth << " x "
+                  << elem.relativeHeight << ")";
+        if (!elem.image.empty()) {
+          std::cout << "  crop=" << elem.image.cols << "x" << elem.image.rows;
+        }
+        std::cout << std::endl;
       }
     }
-    std::cout << "+------+--------+--------+-------+--------+----------+"
-              << std::endl;
     std::cout << std::endl;
   }
 
-  // Display statistics
-  std::cout << "Coordinate statistics:" << std::endl;
+  // Display ALL elements with relative coordinates
+  std::cout << "All elements (with relative coordinates):" << std::endl;
+  std::cout
+      << "+------+------------+----------+----------+---------+----------+"
+         "----------------------+"
+      << std::endl;
+  std::cout
+      << "| #    | Type       | CX (rel) | CY (rel) | W (rel) | H (rel)  |"
+         " Detail               | OCR Conf |"
+      << std::endl;
+  std::cout
+      << "+------+------------+----------+----------+---------+----------+"
+         "----------------------+----------+"
+      << std::endl;
 
-  int minX = INT_MAX, minY = INT_MAX, maxX = 0, maxY = 0;
+  for (size_t i = 0; i < result.elements.size(); i++) {
+    const auto &elem = result.elements[i];
+
+    // Type string
+    std::string typeStr;
+    switch (elem.type) {
+    case ocr::OCRAnalysis::RenderedElement::TEXT:
+      typeStr = "TEXT";
+      break;
+    case ocr::OCRAnalysis::RenderedElement::IMAGE:
+      typeStr = "IMAGE";
+      break;
+    case ocr::OCRAnalysis::RenderedElement::RECTANGLE:
+      typeStr = "RECT";
+      break;
+    case ocr::OCRAnalysis::RenderedElement::LINE:
+      typeStr = "LINE";
+      break;
+    case ocr::OCRAnalysis::RenderedElement::DATAMATRIX:
+      typeStr = "DATAMATRIX";
+      break;
+    }
+
+    // Detail string depends on type
+    std::string detail;
+    if (elem.type == ocr::OCRAnalysis::RenderedElement::TEXT) {
+      detail = elem.text;
+    } else if (elem.type == ocr::OCRAnalysis::RenderedElement::DATAMATRIX) {
+      detail = elem.barcodeText;
+    } else if (elem.type == ocr::OCRAnalysis::RenderedElement::IMAGE) {
+      detail = elem.image.empty()
+                   ? "(empty)"
+                   : std::to_string(elem.image.cols) + "x" +
+                         std::to_string(elem.image.rows) + " ch" +
+                         std::to_string(elem.image.channels());
+    } else if (elem.type == ocr::OCRAnalysis::RenderedElement::LINE) {
+      std::ostringstream oss;
+      oss << std::fixed << std::setprecision(4) << "→(" << elem.relativeX2
+          << "," << elem.relativeY2 << ")";
+      detail = oss.str();
+    }
+    if (detail.length() > 20) {
+      detail = detail.substr(0, 17) + "...";
+    }
+
+    std::cout << "| " << std::setw(4) << std::left << i + 1 << " | "
+              << std::setw(10) << std::left << typeStr << " | " << std::setw(8)
+              << std::right << std::fixed << std::setprecision(4)
+              << elem.relativeX << " | " << std::setw(8) << elem.relativeY
+              << " | " << std::setw(7) << elem.relativeWidth << " | "
+              << std::setw(8) << elem.relativeHeight << " | " << std::setw(20)
+              << std::left << detail << " | ";
+    // OCR confidence column
+    if (elem.ocrConfidence >= 0.0f) {
+      std::cout << std::setw(7) << std::right << std::fixed
+                << std::setprecision(1) << elem.ocrConfidence << "%";
+    } else {
+      std::cout << std::setw(8) << " ";
+    }
+    std::cout << " |" << std::endl;
+  }
+  std::cout
+      << "+------+------------+----------+----------+---------+----------+"
+         "----------------------+----------+"
+      << std::endl;
+  std::cout << std::endl;
+
+  // Display statistics
+  std::cout << "Coordinate statistics (relative):" << std::endl;
+
+  double minX = 1.0, minY = 1.0, maxX = 0.0, maxY = 0.0;
   for (const auto &elem : result.elements) {
-    minX = std::min(minX, elem.pixelX);
-    minY = std::min(minY, elem.pixelY);
-    maxX = std::max(maxX, elem.pixelX + elem.pixelWidth);
-    maxY = std::max(maxY, elem.pixelY + elem.pixelHeight);
+    double left = elem.relativeX - elem.relativeWidth / 2.0;
+    double top = elem.relativeY - elem.relativeHeight / 2.0;
+    double right = elem.relativeX + elem.relativeWidth / 2.0;
+    double bottom = elem.relativeY + elem.relativeHeight / 2.0;
+    minX = std::min(minX, left);
+    minY = std::min(minY, top);
+    maxX = std::max(maxX, right);
+    maxY = std::max(maxY, bottom);
   }
 
   std::cout << "  Bounding box: (" << minX << ", " << minY << ") to (" << maxX
             << ", " << maxY << ")" << std::endl;
   std::cout << "  Content area: " << (maxX - minX) << " x " << (maxY - minY)
-            << " pixels" << std::endl;
+            << " (relative)" << std::endl;
   std::cout << std::endl;
 
   std::cout << "Test completed successfully!" << std::endl;

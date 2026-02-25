@@ -15,6 +15,13 @@
 #include <cairo.h>
 #endif
 
+// ZXing for barcode / DataMatrix detection (if available)
+#ifdef HAVE_ZXING
+#include "C:/zxing-cpp/core/src/BarcodeFormat.h"
+#include "C:/zxing-cpp/core/src/ImageView.h"
+#include "C:/zxing-cpp/core/src/ReadBarcode.h"
+#endif
+
 // Define M_PI if not already defined (Windows)
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -33,7 +40,12 @@
 #include <PDFDoc.h>
 #include <Page.h>
 #include <Stream.h>
+#include <TextOutputDev.h>
 #include <goo/GooString.h>
+
+// Poppler Splash renderer for full-page rasterization
+#include <SplashOutputDev.h>
+#include <splash/SplashBitmap.h>
 
 namespace ocr {
 
@@ -765,7 +777,7 @@ namespace {
 
 class ImageExtractorOutputDev : public OutputDev {
 public:
-  ImageExtractorOutputDev() : pageNumber(1), imageIndex(0) {}
+  ImageExtractorOutputDev() : doc(nullptr), pageNumber(1), imageIndex(0) {}
 
   // Get the extracted images
   std::vector<OCRAnalysis::PDFEmbeddedImage> &getImages() { return images; }
@@ -775,16 +787,108 @@ public:
     imageIndex = 0;
   }
 
+  void setDoc(PDFDoc *d) { doc = d; }
+
   // Required OutputDev overrides
   bool upsideDown() override { return false; }
   bool useDrawChar() override { return false; }
   bool interpretType3Chars() override { return false; }
   bool needNonText() override { return true; } // We need images!
 
+  // Handle 1-bit image masks (stencil images).
+  // An image mask is a 1-bit-per-pixel image where each pixel is either
+  // the current fill colour or transparent. Logos and icons are often
+  // stored this way in PDFs.
+  void drawImageMask(GfxState *state, Object * /*ref*/, Stream *str, int width,
+                     int height, bool invert, bool /*interpolate*/,
+                     bool /*inlineImg*/) override {
+
+    std::cerr << "DEBUG: drawImageMask called: " << width << "x" << height
+              << " invert=" << invert << std::endl;
+
+    if (width <= 0 || height <= 0) {
+      return;
+    }
+
+    // Get the current fill colour — this is used for opaque mask pixels
+    GfxRGB fillRgb;
+    state->getFillRGB(&fillRgb);
+    unsigned char fgR = colToByte(fillRgb.r);
+    unsigned char fgG = colToByte(fillRgb.g);
+    unsigned char fgB = colToByte(fillRgb.b);
+
+    // Read the 1-bit mask
+    str->reset();
+    ImageStream imgStr(str, width, 1, 1);
+    imgStr.reset();
+
+    // Composite over white: opaque mask pixels → fill colour, rest → white
+    cv::Mat mat(height, width, CV_8UC3);
+    for (int row = 0; row < height; row++) {
+      unsigned char *line = imgStr.getLine();
+      if (!line)
+        break;
+      unsigned char *imgRow = mat.ptr<unsigned char>(row);
+      for (int col = 0; col < width; col++) {
+        // Per PDF spec: if invert==false, sample 0 = paint, 1 = transparent
+        //               if invert==true,  sample 1 = paint, 0 = transparent
+        bool paint = invert ? (line[col] != 0) : (line[col] == 0);
+        if (paint) {
+          imgRow[col * 3 + 0] = fgB; // BGR for OpenCV
+          imgRow[col * 3 + 1] = fgG;
+          imgRow[col * 3 + 2] = fgR;
+        } else {
+          imgRow[col * 3 + 0] = 255;
+          imgRow[col * 3 + 1] = 255;
+          imgRow[col * 3 + 2] = 255;
+        }
+      }
+    }
+    imgStr.close();
+
+    // Position info from CTM
+    const auto &ctm = state->getCTM();
+    double displayWidth = std::sqrt(ctm[0] * ctm[0] + ctm[1] * ctm[1]);
+    double displayHeight = std::sqrt(ctm[2] * ctm[2] + ctm[3] * ctm[3]);
+
+    double x0 = ctm[4], y0 = ctm[5];
+    double x1 = ctm[4] + ctm[0], y1 = ctm[5] + ctm[1];
+    double x2 = ctm[4] + ctm[2], y2 = ctm[5] + ctm[3];
+    double x3 = ctm[4] + ctm[0] + ctm[2], y3 = ctm[5] + ctm[1] + ctm[3];
+
+    double x = std::min({x0, x1, x2, x3});
+    double y = std::min({y0, y1, y2, y3});
+    double rotationAngle = std::atan2(ctm[1], ctm[0]);
+
+    OCRAnalysis::PDFEmbeddedImage img;
+    img.image = mat;
+    img.pageNumber = pageNumber;
+    img.imageIndex = imageIndex++;
+    img.width = width;
+    img.height = height;
+    img.x = x;
+    img.y = y;
+    img.displayWidth = displayWidth;
+    img.displayHeight = displayHeight;
+    img.rotationAngle = rotationAngle;
+    img.type = "image_mask";
+
+    std::cerr << "DEBUG: drawImageMask extracted " << width << "x" << height
+              << " at (" << x << ", " << y << "), display " << displayWidth
+              << "x" << displayHeight << ", fill=(" << (int)fgR << ","
+              << (int)fgG << "," << (int)fgB << ")" << std::endl;
+
+    images.push_back(img);
+  }
+
   // This is called for each image in the PDF
-  void drawImage(GfxState *state, Object * /*ref*/, Stream *str, int width,
+  void drawImage(GfxState *state, Object *ref, Stream *str, int width,
                  int height, GfxImageColorMap *colorMap, bool /*interpolate*/,
-                 const int * /*maskColors*/, bool /*inlineImg*/) override {
+                 const int * /*maskColors*/, bool inlineImg) override {
+
+    std::cerr << "DEBUG: drawImage called: " << width << "x" << height
+              << " nComps=" << (colorMap ? colorMap->getNumPixelComps() : -1)
+              << " inline=" << inlineImg << std::endl;
 
     if (width <= 0 || height <= 0 || !colorMap) {
       return;
@@ -822,23 +926,26 @@ public:
     double x = std::min({x0, x1, x2, x3});
     double y = std::min({y0, y1, y2, y3});
 
-    std::cerr << "DEBUG: Image CTM: [" << ctm[0] << ", " << ctm[1] << ", "
-              << ctm[2] << ", " << ctm[3] << ", " << ctm[4] << ", " << ctm[5]
-              << "]" << std::endl;
-    std::cerr << "DEBUG: Image corners: (" << x0 << "," << y0 << "), (" << x1
-              << "," << y1 << "), (" << x2 << "," << y2 << "), (" << x3 << ","
-              << y3 << ")" << std::endl;
-    std::cerr << "DEBUG: Image AABB position: (" << x << ", " << y
-              << "), display size: " << displayWidth << " x " << displayHeight
-              << std::endl;
-
     // Determine image type and channels
     int nComps = colorMap->getNumPixelComps();
     int nBits = colorMap->getBits();
 
-    // Create an ImageStream to read the image data properly
-    ImageStream imgStr(str, width, nComps, nBits);
-    imgStr.reset(); // Initialize the stream
+    // For non-inline images, fetch a fresh stream from the PDF's XRef table.
+    // The stream pointer passed to drawImage has already been consumed by
+    // Poppler's rendering pipeline and reads as all-zeros.
+    Stream *imgStream = str;
+    Object fetchedObj;
+    if (!inlineImg && ref && ref->isRef() && doc) {
+      fetchedObj = ref->fetch(doc->getXRef());
+      if (fetchedObj.isStream()) {
+        imgStream = fetchedObj.getStream();
+      }
+    }
+
+    // Read the image data via ImageStream
+    imgStream->reset();
+    ImageStream imgStr(imgStream, width, nComps, nBits);
+    imgStr.reset();
 
     // Create OpenCV Mat - always use 3-channel output for simplicity
     cv::Mat mat(height, width, CV_8UC3);
@@ -887,8 +994,256 @@ public:
     images.push_back(img);
   }
 
+  // Handle images with soft masks (SMask / alpha channel).
+  // In some PDFs, text like "<MED>" is stored as a solid-fill image
+  // whose letter shapes are cut out via the soft mask.
+  void drawSoftMaskedImage(GfxState *state, Object *ref, Stream *str, int width,
+                           int height, GfxImageColorMap *colorMap,
+                           bool /*interpolate*/, Stream *maskStr, int maskWidth,
+                           int maskHeight, GfxImageColorMap *maskColorMap,
+                           bool /*maskInterpolate*/) override {
+
+    std::cerr << "DEBUG: drawSoftMaskedImage called: base " << width << "x"
+              << height << ", mask " << maskWidth << "x" << maskHeight
+              << std::endl;
+
+    if (maskWidth <= 0 || maskHeight <= 0 || !maskColorMap) {
+      // Fall back to regular drawImage if no usable mask
+      drawImage(state, ref, str, width, height, colorMap, false, nullptr,
+                false);
+      return;
+    }
+
+    // --- Read the foreground colour from the base image ---------
+    // The base image is typically a tiny solid-fill rectangle.
+    int fgNComps = colorMap ? colorMap->getNumPixelComps() : 0;
+    int fgBits = colorMap ? colorMap->getBits() : 8;
+    GfxRGB fgRgb;
+    fgRgb.r = 0;
+    fgRgb.g = 0;
+    fgRgb.b = 0; // default black
+
+    if (colorMap && width > 0 && height > 0) {
+      Stream *fgStream = str;
+      Object fetchedFg;
+      if (ref && ref->isRef() && doc) {
+        fetchedFg = ref->fetch(doc->getXRef());
+        if (fetchedFg.isStream())
+          fgStream = fetchedFg.getStream();
+      }
+      fgStream->reset();
+      ImageStream fgImgStr(fgStream, width, fgNComps, fgBits);
+      fgImgStr.reset();
+      unsigned char *fgLine = fgImgStr.getLine();
+      if (fgLine) {
+        colorMap->getRGB(fgLine, &fgRgb);
+      }
+      fgImgStr.close();
+    }
+
+    unsigned char fgB = colToByte(fgRgb.r);
+    unsigned char fgG = colToByte(fgRgb.g);
+    unsigned char fgR = colToByte(fgRgb.b); // swap for BGR
+
+    // --- Read the soft mask (alpha channel) --------------------
+    // Re-fetch maskStr from XRef if possible to avoid consumed stream.
+    // maskStr is separate from str; Poppler passes it directly from
+    // the SMask object.  We still try a fresh fetch via ref lookup.
+    maskStr->reset();
+    int maskNComps = maskColorMap->getNumPixelComps();
+    int maskBits = maskColorMap->getBits();
+    ImageStream maskImgStr(maskStr, maskWidth, maskNComps, maskBits);
+    maskImgStr.reset();
+
+    // Build a BGR image by compositing foreground colour + mask over white
+    cv::Mat mat(maskHeight, maskWidth, CV_8UC3);
+
+    for (int row = 0; row < maskHeight; row++) {
+      unsigned char *mLine = maskImgStr.getLine();
+      if (!mLine)
+        break;
+
+      unsigned char *imgRow = mat.ptr<unsigned char>(row);
+      for (int col = 0; col < maskWidth; col++) {
+        // Get mask alpha (0 = transparent, 255 = fully opaque)
+        GfxGray gray;
+        maskColorMap->getGray(&mLine[col * maskNComps], &gray);
+        unsigned char alpha = colToByte(gray);
+
+        // Composite over white: out = fg * alpha + white * (1 - alpha)
+        unsigned char invAlpha = 255 - alpha;
+        imgRow[col * 3 + 0] =
+            (unsigned char)((fgR * alpha + 255 * invAlpha) / 255);
+        imgRow[col * 3 + 1] =
+            (unsigned char)((fgG * alpha + 255 * invAlpha) / 255);
+        imgRow[col * 3 + 2] =
+            (unsigned char)((fgB * alpha + 255 * invAlpha) / 255);
+      }
+    }
+    maskImgStr.close();
+
+    // --- Position info from CTM --------------------------------
+    const auto &ctm = state->getCTM();
+    double displayWidth = std::sqrt(ctm[0] * ctm[0] + ctm[1] * ctm[1]);
+    double displayHeight = std::sqrt(ctm[2] * ctm[2] + ctm[3] * ctm[3]);
+
+    double x0 = ctm[4], y0 = ctm[5];
+    double x1 = ctm[4] + ctm[0], y1 = ctm[5] + ctm[1];
+    double x2 = ctm[4] + ctm[2], y2 = ctm[5] + ctm[3];
+    double x3 = ctm[4] + ctm[0] + ctm[2], y3 = ctm[5] + ctm[1] + ctm[3];
+
+    double x = std::min({x0, x1, x2, x3});
+    double y = std::min({y0, y1, y2, y3});
+    double rotationAngle = std::atan2(ctm[1], ctm[0]);
+
+    OCRAnalysis::PDFEmbeddedImage img;
+    img.image = mat;
+    img.pageNumber = pageNumber;
+    img.imageIndex = imageIndex++;
+    img.width = maskWidth;
+    img.height = maskHeight;
+    img.x = x;
+    img.y = y;
+    img.displayWidth = displayWidth;
+    img.displayHeight = displayHeight;
+    img.rotationAngle = rotationAngle;
+    img.type = "soft_masked";
+
+    images.push_back(img);
+  }
+
+  // Handle images with a 1-bit (hard) mask.
+  // Some logos and graphics use a 1-bit transparency mask instead of
+  // a soft (8-bit) mask.  Without this override the image is silently
+  // dropped by Poppler.
+  void drawMaskedImage(GfxState *state, Object *ref, Stream *str, int width,
+                       int height, GfxImageColorMap *colorMap,
+                       bool /*interpolate*/, Stream *maskStr, int maskWidth,
+                       int maskHeight, bool maskInvert,
+                       bool /*maskInterpolate*/) override {
+
+    std::cerr << "DEBUG: drawMaskedImage called: image " << width << "x"
+              << height << ", mask " << maskWidth << "x" << maskHeight
+              << ", invert=" << maskInvert << std::endl;
+
+    if (width <= 0 || height <= 0 || !colorMap) {
+      return;
+    }
+
+    // --- Read the base (colour) image ---------------------------
+    int nComps = colorMap->getNumPixelComps();
+    int nBits = colorMap->getBits();
+
+    Stream *imgStream = str;
+    Object fetchedObj;
+    if (ref && ref->isRef() && doc) {
+      fetchedObj = ref->fetch(doc->getXRef());
+      if (fetchedObj.isStream()) {
+        imgStream = fetchedObj.getStream();
+      }
+    }
+    imgStream->reset();
+    ImageStream imgStr(imgStream, width, nComps, nBits);
+    imgStr.reset();
+
+    // Read colour pixels into a BGR Mat
+    cv::Mat colourMat(height, width, CV_8UC3);
+    GfxRGB rgb;
+    for (int row = 0; row < height; row++) {
+      unsigned char *line = imgStr.getLine();
+      if (!line)
+        break;
+      unsigned char *imgRow = colourMat.ptr<unsigned char>(row);
+      for (int col = 0; col < width; col++) {
+        colorMap->getRGB(&line[col * nComps], &rgb);
+        imgRow[col * 3 + 0] = colToByte(rgb.b); // BGR
+        imgRow[col * 3 + 1] = colToByte(rgb.g);
+        imgRow[col * 3 + 2] = colToByte(rgb.r);
+      }
+    }
+    imgStr.close();
+
+    // --- Read the 1-bit mask ------------------------------------
+    maskStr->reset();
+    ImageStream maskImgStr(maskStr, maskWidth, 1, 1);
+    maskImgStr.reset();
+
+    cv::Mat maskMat(maskHeight, maskWidth, CV_8UC1);
+    for (int row = 0; row < maskHeight; row++) {
+      unsigned char *mLine = maskImgStr.getLine();
+      if (!mLine)
+        break;
+      unsigned char *mRow = maskMat.ptr<unsigned char>(row);
+      for (int col = 0; col < maskWidth; col++) {
+        // mask bit: 1 = opaque (or transparent if inverted)
+        unsigned char bit = mLine[col] ? 255 : 0;
+        if (maskInvert)
+          bit = 255 - bit;
+        mRow[col] = bit;
+      }
+    }
+    maskImgStr.close();
+
+    // --- Composite over white -----------------------------------
+    // Resize mask to match colour image if needed
+    if (maskMat.rows != colourMat.rows || maskMat.cols != colourMat.cols) {
+      cv::resize(maskMat, maskMat, colourMat.size(), 0, 0, cv::INTER_NEAREST);
+    }
+
+    cv::Mat result(colourMat.rows, colourMat.cols, CV_8UC3);
+    for (int row = 0; row < colourMat.rows; row++) {
+      const unsigned char *cRow = colourMat.ptr<unsigned char>(row);
+      const unsigned char *mRow = maskMat.ptr<unsigned char>(row);
+      unsigned char *oRow = result.ptr<unsigned char>(row);
+      for (int col = 0; col < colourMat.cols; col++) {
+        unsigned char alpha = mRow[col];
+        unsigned char invAlpha = 255 - alpha;
+        oRow[col * 3 + 0] =
+            (unsigned char)((cRow[col * 3 + 0] * alpha + 255 * invAlpha) / 255);
+        oRow[col * 3 + 1] =
+            (unsigned char)((cRow[col * 3 + 1] * alpha + 255 * invAlpha) / 255);
+        oRow[col * 3 + 2] =
+            (unsigned char)((cRow[col * 3 + 2] * alpha + 255 * invAlpha) / 255);
+      }
+    }
+
+    // --- Position info from CTM --------------------------------
+    const auto &ctm = state->getCTM();
+    double displayWidth = std::sqrt(ctm[0] * ctm[0] + ctm[1] * ctm[1]);
+    double displayHeight = std::sqrt(ctm[2] * ctm[2] + ctm[3] * ctm[3]);
+
+    double x0 = ctm[4], y0 = ctm[5];
+    double x1 = ctm[4] + ctm[0], y1 = ctm[5] + ctm[1];
+    double x2 = ctm[4] + ctm[2], y2 = ctm[5] + ctm[3];
+    double x3 = ctm[4] + ctm[0] + ctm[2], y3 = ctm[5] + ctm[1] + ctm[3];
+
+    double x = std::min({x0, x1, x2, x3});
+    double y = std::min({y0, y1, y2, y3});
+    double rotationAngle = std::atan2(ctm[1], ctm[0]);
+
+    OCRAnalysis::PDFEmbeddedImage img;
+    img.image = result;
+    img.pageNumber = pageNumber;
+    img.imageIndex = imageIndex++;
+    img.width = colourMat.cols;
+    img.height = colourMat.rows;
+    img.x = x;
+    img.y = y;
+    img.displayWidth = displayWidth;
+    img.displayHeight = displayHeight;
+    img.rotationAngle = rotationAngle;
+    img.type = "masked";
+
+    std::cerr << "DEBUG: drawMaskedImage extracted " << img.width << "x"
+              << img.height << " at (" << x << ", " << y << "), display "
+              << displayWidth << "x" << displayHeight << std::endl;
+
+    images.push_back(img);
+  }
+
 private:
   std::vector<OCRAnalysis::PDFEmbeddedImage> images;
+  PDFDoc *doc;
   int pageNumber;
   int imageIndex;
 };
@@ -925,6 +1280,7 @@ OCRAnalysis::extractEmbeddedImagesFromPDF(const std::string &pdfPath) {
     // Create our custom output device to capture images
     std::cerr << "DEBUG: Creating ImageExtractorOutputDev..." << std::endl;
     ImageExtractorOutputDev outputDev;
+    outputDev.setDoc(doc.get());
 
     // Process only the first page (page 1)
     int pageIndex = 1;
@@ -1399,7 +1755,8 @@ OCRAnalysis::extractLinesFromPDF(const std::string &pdfPath, double minLength) {
 
 OCRAnalysis::PDFElements
 OCRAnalysis::extractPDFElements(const std::string &pdfPath, double minRectSize,
-                                double minLineLength) {
+                                double minLineLength,
+                                const std::string &imageOutputDir) {
   PDFElements result;
   result.success = false;
 
@@ -1441,6 +1798,244 @@ OCRAnalysis::extractPDFElements(const std::string &pdfPath, double minRectSize,
     } catch (const std::exception &e) {
       std::cerr << "DEBUG: Image extraction threw exception: " << e.what()
                 << std::endl;
+    }
+
+    // Scan for DataMatrix barcodes
+#ifdef HAVE_ZXING
+    std::cerr << "DEBUG: Scanning for DataMatrix barcodes..." << std::endl;
+    try {
+      ZXing::ReaderOptions opts;
+      opts.setFormats(ZXing::BarcodeFormat::DataMatrix);
+      opts.setTryHarder(true);
+      opts.setTryRotate(true);
+
+      // Strategy 1: Scan each embedded image
+      for (size_t imgIdx = 0; imgIdx < result.images.size(); imgIdx++) {
+        const auto &pdfImage = result.images[imgIdx];
+        if (pdfImage.image.empty())
+          continue;
+
+        cv::Mat scanImg;
+        if (pdfImage.image.channels() == 4) {
+          cv::cvtColor(pdfImage.image, scanImg, cv::COLOR_BGRA2BGR);
+        } else {
+          scanImg = pdfImage.image;
+        }
+
+        auto fmt = ZXing::ImageFormat::None;
+        switch (scanImg.channels()) {
+        case 1:
+          fmt = ZXing::ImageFormat::Lum;
+          break;
+        case 3:
+          fmt = ZXing::ImageFormat::BGR;
+          break;
+        default:
+          continue;
+        }
+
+        ZXing::ImageView iv(scanImg.data, scanImg.cols, scanImg.rows, fmt);
+        auto barcodes = ZXing::ReadBarcodes(iv, opts);
+
+        double scaleX = pdfImage.displayWidth / pdfImage.image.cols;
+        double scaleY = pdfImage.displayHeight / pdfImage.image.rows;
+
+        for (const auto &bc : barcodes) {
+          auto pos = bc.position();
+          int pxMinX =
+              std::max(0, std::min({pos[0].x, pos[1].x, pos[2].x, pos[3].x}));
+          int pxMinY =
+              std::max(0, std::min({pos[0].y, pos[1].y, pos[2].y, pos[3].y}));
+          int pxMaxX = std::min(
+              scanImg.cols, std::max({pos[0].x, pos[1].x, pos[2].x, pos[3].x}));
+          int pxMaxY = std::min(
+              scanImg.rows, std::max({pos[0].y, pos[1].y, pos[2].y, pos[3].y}));
+
+          PDFDataMatrix dm;
+          dm.text = bc.text();
+          dm.x = pdfImage.x + pxMinX * scaleX;
+          dm.y = pdfImage.y + pxMinY * scaleY;
+          dm.width = (pxMaxX - pxMinX) * scaleX;
+          dm.height = (pxMaxY - pxMinY) * scaleY;
+          dm.sourceImageIndex = static_cast<int>(imgIdx);
+
+          int cropW = pxMaxX - pxMinX;
+          int cropH = pxMaxY - pxMinY;
+          if (cropW > 0 && cropH > 0) {
+            dm.image =
+                pdfImage.image(cv::Rect(pxMinX, pxMinY, cropW, cropH)).clone();
+          }
+
+          std::cerr << "DEBUG: DataMatrix in image " << imgIdx << ": \""
+                    << dm.text.substr(0, 30) << "\" at PDF (" << dm.x << ", "
+                    << dm.y << ") size " << dm.width << "x" << dm.height
+                    << std::endl;
+          result.dataMatrices.push_back(std::move(dm));
+        }
+      }
+
+      // Strategy 2: Rasterise the full page and scan for vector-drawn
+      // DataMatrix codes that won't appear as embedded images
+      std::cerr << "DEBUG: Rasterising page for vector DataMatrix detection..."
+                << std::endl;
+      try {
+        std::unique_ptr<poppler::document> doc(
+            poppler::document::load_from_file(pdfPath));
+        if (doc && doc->pages() > 0) {
+          std::unique_ptr<poppler::page> page(doc->create_page(0));
+          if (page) {
+            poppler::page_renderer renderer;
+            renderer.set_render_hint(poppler::page_renderer::antialiasing,
+                                     true);
+            renderer.set_render_hint(poppler::page_renderer::text_antialiasing,
+                                     true);
+            renderer.set_image_format(poppler::image::format_argb32);
+
+            // Render at 600 DPI for reliable barcode detection
+            const double scanDpi = 600.0;
+            poppler::image popplerImg =
+                renderer.render_page(page.get(), scanDpi, scanDpi);
+
+            if (popplerImg.is_valid()) {
+              int w = popplerImg.width();
+              int h = popplerImg.height();
+              cv::Mat pageMat(h, w, CV_8UC4,
+                              const_cast<char *>(popplerImg.const_data()),
+                              popplerImg.bytes_per_row());
+              cv::Mat pageBGR;
+              cv::cvtColor(pageMat, pageBGR, cv::COLOR_BGRA2BGR);
+
+              ZXing::ImageView pageIV(pageBGR.data, pageBGR.cols, pageBGR.rows,
+                                      ZXing::ImageFormat::BGR);
+              auto pageBarcodes = ZXing::ReadBarcodes(pageIV, opts);
+
+              // Scale from raster pixels to PDF points
+              poppler::rectf pageRect = page->page_rect();
+              double pixToPtX = pageRect.width() / w;
+              double pixToPtY = pageRect.height() / h;
+
+              for (const auto &bc : pageBarcodes) {
+                auto pos = bc.position();
+                int pxMinX = std::max(
+                    0, std::min({pos[0].x, pos[1].x, pos[2].x, pos[3].x}));
+                int pxMinY = std::max(
+                    0, std::min({pos[0].y, pos[1].y, pos[2].y, pos[3].y}));
+                int pxMaxX = std::min(
+                    w, std::max({pos[0].x, pos[1].x, pos[2].x, pos[3].x}));
+                int pxMaxY = std::min(
+                    h, std::max({pos[0].y, pos[1].y, pos[2].y, pos[3].y}));
+
+                double pdfX = pageRect.x() + pxMinX * pixToPtX;
+                double pdfY = pageRect.y() + pxMinY * pixToPtY;
+                double pdfW = (pxMaxX - pxMinX) * pixToPtX;
+                double pdfH = (pxMaxY - pxMinY) * pixToPtY;
+
+                // Check if this barcode was already found in an embedded image
+                // (dedup by position overlap)
+                bool isDuplicate = false;
+                for (const auto &existing : result.dataMatrices) {
+                  double overlapX = std::max(
+                      0.0, std::min(existing.x + existing.width, pdfX + pdfW) -
+                               std::max(existing.x, pdfX));
+                  double overlapY = std::max(
+                      0.0, std::min(existing.y + existing.height, pdfY + pdfH) -
+                               std::max(existing.y, pdfY));
+                  double overlapArea = overlapX * overlapY;
+                  double existingArea = existing.width * existing.height;
+                  if (existingArea > 0 && overlapArea / existingArea > 0.3) {
+                    isDuplicate = true;
+                    break;
+                  }
+                }
+
+                if (!isDuplicate) {
+                  PDFDataMatrix dm;
+                  dm.text = bc.text();
+                  dm.x = pdfX;
+                  dm.y = pdfY;
+                  dm.width = pdfW;
+                  dm.height = pdfH;
+                  dm.sourceImageIndex = -1; // from rasterised page
+
+                  int cropW = pxMaxX - pxMinX;
+                  int cropH = pxMaxY - pxMinY;
+                  if (cropW > 0 && cropH > 0) {
+                    dm.image =
+                        pageBGR(cv::Rect(pxMinX, pxMinY, cropW, cropH)).clone();
+                  }
+
+                  std::cerr << "DEBUG: DataMatrix in rasterised page: \""
+                            << dm.text.substr(0, 30) << "\" at PDF (" << dm.x
+                            << ", " << dm.y << ") size " << dm.width << "x"
+                            << dm.height << std::endl;
+                  result.dataMatrices.push_back(std::move(dm));
+                }
+              }
+            }
+          }
+        }
+      } catch (const std::exception &e) {
+        std::cerr << "DEBUG: Page rasterisation for DataMatrix failed: "
+                  << e.what() << std::endl;
+      }
+
+      result.dataMatrixCount = static_cast<int>(result.dataMatrices.size());
+      std::cerr << "DEBUG: Total DataMatrix barcodes found: "
+                << result.dataMatrixCount << std::endl;
+    } catch (const std::exception &e) {
+      std::cerr << "DEBUG: DataMatrix scanning threw exception: " << e.what()
+                << std::endl;
+    }
+#endif // HAVE_ZXING
+
+    // Save images and DataMatrix barcodes to PNG files if output dir specified
+    if (!imageOutputDir.empty()) {
+      try {
+        std::filesystem::path outDir(imageOutputDir);
+        std::filesystem::create_directories(outDir);
+
+        // Get PDF stem for naming files
+        std::filesystem::path pdfFilePath(pdfPath);
+        std::string pdfStem = pdfFilePath.stem().string();
+
+        // Save embedded images
+        for (size_t i = 0; i < result.images.size(); i++) {
+          const auto &img = result.images[i];
+          if (!img.image.empty()) {
+            std::string filename = (outDir / (pdfStem + "_image_" +
+                                              std::to_string(i + 1) + ".png"))
+                                       .string();
+            if (cv::imwrite(filename, img.image)) {
+              std::cerr << "DEBUG: Saved image " << (i + 1) << " ("
+                        << img.image.cols << "x" << img.image.rows
+                        << ") to: " << filename << std::endl;
+            } else {
+              std::cerr << "DEBUG: Failed to save image " << (i + 1)
+                        << " to: " << filename << std::endl;
+            }
+          }
+        }
+
+        // Save DataMatrix barcode images
+        for (size_t i = 0; i < result.dataMatrices.size(); i++) {
+          const auto &dm = result.dataMatrices[i];
+          if (!dm.image.empty()) {
+            std::string filename = (outDir / (pdfStem + "_datamatrix_" +
+                                              std::to_string(i + 1) + ".png"))
+                                       .string();
+            if (cv::imwrite(filename, dm.image)) {
+              std::cerr << "DEBUG: Saved DataMatrix " << (i + 1) << " (\""
+                        << dm.text.substr(0, 30) << "\") to: " << filename
+                        << std::endl;
+            } else {
+              std::cerr << "DEBUG: Failed to save DataMatrix " << (i + 1)
+                        << " to: " << filename << std::endl;
+            }
+          }
+        }
+      } catch (const std::exception &e) {
+        std::cerr << "DEBUG: Failed to save images: " << e.what() << std::endl;
+      }
     }
 
     // Extract rectangles from first page
@@ -1689,182 +2284,382 @@ OCRAnalysis::extractPDFElements(const std::string &pdfPath, double minRectSize,
         result.graphicLineCount = static_cast<int>(result.graphicLines.size());
 
         // Detect crop marks from perpendicular line intersections
-        std::vector<std::pair<double, double>> cropMarkCorners;
+        // (only if we don't already have a linesBoundingBox from TrimBox)
+        if (result.linesBoundingBoxWidth > 0 &&
+            result.linesBoundingBoxHeight > 0) {
+          std::cerr << "DEBUG: Skipping crop mark detection — using TrimBox"
+                    << std::endl;
+        } else {
 
-        // Find short horizontal and vertical lines
-        std::vector<PDFLine> horizontalCropLines;
-        std::vector<PDFLine> verticalCropLines;
+          std::vector<std::pair<double, double>> cropMarkCorners;
 
-        const double cropMarkMaxLength = 30.0;
-        const double cropMarkMinLength = 10.0;
+          // Find short horizontal and vertical lines
+          std::vector<PDFLine> horizontalCropLines;
+          std::vector<PDFLine> verticalCropLines;
 
-        for (const auto &line : lineResult.lines) {
-          double length = std::sqrt(std::pow(line.x2 - line.x1, 2) +
-                                    std::pow(line.y2 - line.y1, 2));
+          const double cropMarkMaxLength = 30.0;
+          const double cropMarkMinLength = 10.0;
 
-          if (length >= cropMarkMinLength && length <= cropMarkMaxLength) {
-            if (line.isHorizontal) {
-              horizontalCropLines.push_back(line);
-            } else if (line.isVertical) {
-              verticalCropLines.push_back(line);
+          for (const auto &line : lineResult.lines) {
+            double length = std::sqrt(std::pow(line.x2 - line.x1, 2) +
+                                      std::pow(line.y2 - line.y1, 2));
+
+            if (length >= cropMarkMinLength && length <= cropMarkMaxLength) {
+              if (line.isHorizontal) {
+                horizontalCropLines.push_back(line);
+              } else if (line.isVertical) {
+                verticalCropLines.push_back(line);
+              }
             }
           }
-        }
 
-        std::cerr << "DEBUG: Found " << horizontalCropLines.size()
-                  << " horizontal crop mark lines, " << verticalCropLines.size()
-                  << " vertical" << std::endl;
+          // Filter out bleed mark lines: bleed marks are rows of small
+          // coloured boxes that all sit on the same horizontal line.
+          // Strategy:
+          //   1. Group horizontal lines by Y coordinate. Any Y with >4
+          //      horizontal lines is a bleed-mark row.
+          //   2. Determine the Y-band(s) of those rows.
+          //   3. Remove ALL horizontal lines in those Y groups.
+          //   4. Remove ALL vertical lines whose endpoints fall within
+          //      a bleed-mark Y-band — these are the box edges.
+          {
+            const double gridTolerance = 3.0;
 
-        // Find intersection points
-        const double intersectionTolerance = 5.0;
-
-        for (const auto &hLine : horizontalCropLines) {
-          double hY = (hLine.y1 + hLine.y2) / 2.0;
-
-          for (const auto &vLine : verticalCropLines) {
-            double vX = (vLine.x1 + vLine.x2) / 2.0;
-
-            double hMinX = std::min(hLine.x1, hLine.x2);
-            double hMaxX = std::max(hLine.x1, hLine.x2);
-            double vMinY = std::min(vLine.y1, vLine.y2);
-            double vMaxY = std::max(vLine.y1, vLine.y2);
-
-            bool hLineNearVLine = (vX >= hMinX - intersectionTolerance &&
-                                   vX <= hMaxX + intersectionTolerance);
-            bool vLineNearHLine = (hY >= vMinY - intersectionTolerance &&
-                                   hY <= vMaxY + intersectionTolerance);
-
-            if (hLineNearVLine && vLineNearHLine) {
-              cropMarkCorners.push_back({vX, hY});
-            }
-          }
-        }
-
-        std::cerr << "DEBUG: Found " << cropMarkCorners.size()
-                  << " crop mark intersection points" << std::endl;
-
-        // Calculate interior box from crop mark corners
-        if (cropMarkCorners.size() >= 4) {
-          // Cluster nearby corners together (many duplicates from multiple line
-          // widths)
-          const double clusterTolerance = 5.0;
-          std::vector<std::pair<double, double>> uniqueCorners;
-
-          for (const auto &corner : cropMarkCorners) {
-            bool foundCluster = false;
-            for (auto &unique : uniqueCorners) {
-              double dx = corner.first - unique.first;
-              double dy = corner.second - unique.second;
-              double dist = std::sqrt(dx * dx + dy * dy);
-
-              if (dist < clusterTolerance) {
-                unique.first = (unique.first + corner.first) / 2.0;
-                unique.second = (unique.second + corner.second) / 2.0;
-                foundCluster = true;
-                break;
+            // Step 1: Group horizontal lines by Y coordinate
+            std::map<double, std::vector<int>> hLinesByY;
+            for (size_t i = 0; i < horizontalCropLines.size(); i++) {
+              double y =
+                  (horizontalCropLines[i].y1 + horizontalCropLines[i].y2) / 2.0;
+              bool found = false;
+              for (auto &[groupY, indices] : hLinesByY) {
+                if (std::abs(y - groupY) < gridTolerance) {
+                  indices.push_back(static_cast<int>(i));
+                  found = true;
+                  break;
+                }
+              }
+              if (!found) {
+                hLinesByY[y].push_back(static_cast<int>(i));
               }
             }
 
-            if (!foundCluster) {
-              uniqueCorners.push_back(corner);
-            }
-          }
+            // Step 2: Identify bleed-mark Y-bands (groups with >4 lines)
+            const int maxGroupSize = 4;
+            std::set<int> hLinesToRemove;
+            // Collect the Y-band ranges from bleed-mark rows
+            struct YBand {
+              double minY, maxY;
+              double minX = 0, maxX = 0; // interior X range of bleed marks
+            };
+            std::vector<YBand> bleedBands;
 
-          std::cerr << "DEBUG: Clustered " << cropMarkCorners.size()
-                    << " corners to " << uniqueCorners.size()
-                    << " unique corners" << std::endl;
+            for (const auto &[y, indices] : hLinesByY) {
+              if (static_cast<int>(indices.size()) > maxGroupSize) {
+                // This Y coordinate has many horizontal lines — it's a
+                // bleed-mark row.  However, crop mark lines may also
+                // exist at this same Y (at the extreme left/right edge
+                // of the content area).  To distinguish:
+                //  - Find the overall X extent of ALL lines in the group
+                //  - Lines that start/end near the overall left or right
+                //    edge are crop marks; lines in the interior are bleed
+                //    mark box edges.
 
-          // Find the 4 crop mark corners by grouping by X and Y coordinates
-          // The 4 actual crop marks will share 2 X values and 2 Y values
-          std::map<double, int> xCounts;
-          std::map<double, int> yCounts;
+                // Find overall X extent
+                double groupMinX = std::numeric_limits<double>::max();
+                double groupMaxX = std::numeric_limits<double>::lowest();
+                for (int idx : indices) {
+                  const auto &line = horizontalCropLines[idx];
+                  groupMinX = std::min(groupMinX, std::min(line.x1, line.x2));
+                  groupMaxX = std::max(groupMaxX, std::max(line.x1, line.x2));
+                }
 
-          const double coordTolerance = 10.0;
+                // The crop marks will be at the extreme edges.
+                // Define interior zone: lines that don't touch the
+                // leftmost or rightmost cropMarkMaxLength are bleed marks.
+                double leftEdge = groupMinX + cropMarkMaxLength;
+                double rightEdge = groupMaxX - cropMarkMaxLength;
 
-          // Count corners at each X and Y coordinate
-          for (const auto &corner : uniqueCorners) {
-            // Find or increment X count
-            bool foundX = false;
-            for (auto &[x, count] : xCounts) {
-              if (std::abs(corner.first - x) < coordTolerance) {
-                count++;
-                foundX = true;
-                break;
+                for (int idx : indices) {
+                  const auto &line = horizontalCropLines[idx];
+                  double lineMinX = std::min(line.x1, line.x2);
+                  double lineMaxX = std::max(line.x1, line.x2);
+
+                  // A line is a crop mark if it touches the left or
+                  // right edge of the group
+                  bool isAtLeftEdge = lineMinX < leftEdge;
+                  bool isAtRightEdge = lineMaxX > rightEdge;
+
+                  if (!isAtLeftEdge && !isAtRightEdge) {
+                    // Interior line — bleed mark, remove it
+                    hLinesToRemove.insert(idx);
+                  }
+                }
+
+                // Calculate the Y-band for vertical line filtering
+                double bandMinY = std::numeric_limits<double>::max();
+                double bandMaxY = std::numeric_limits<double>::lowest();
+                for (int idx : indices) {
+                  const auto &line = horizontalCropLines[idx];
+                  bandMinY = std::min(bandMinY, std::min(line.y1, line.y2));
+                  bandMaxY = std::max(bandMaxY, std::max(line.y1, line.y2));
+                }
+                // Expand band slightly to catch box edges
+                bleedBands.push_back(
+                    {bandMinY - gridTolerance, bandMaxY + gridTolerance});
+
+                // Also compute the bleed mark interior X range so we
+                // only remove vertical lines in the interior too
+                bleedBands.back().minX = leftEdge;
+                bleedBands.back().maxX = rightEdge;
+
+                std::cerr << "DEBUG: Bleed mark Y-band: " << bandMinY << " to "
+                          << bandMaxY << ", X interior: " << leftEdge << " to "
+                          << rightEdge << " (" << indices.size()
+                          << " horizontal lines, " << hLinesToRemove.size()
+                          << " marked)" << std::endl;
               }
             }
-            if (!foundX) {
-              xCounts[corner.first] = 1;
+
+            // Merge nearby Y-bands (top and bottom edges of the same
+            // row of boxes will produce separate bands with a gap
+            // equal to the box height; merge if gap < cropMarkMaxLength)
+            if (bleedBands.size() > 1) {
+              std::sort(bleedBands.begin(), bleedBands.end(),
+                        [](const YBand &a, const YBand &b) {
+                          return a.minY < b.minY;
+                        });
+              std::vector<YBand> merged;
+              merged.push_back(bleedBands[0]);
+              for (size_t i = 1; i < bleedBands.size(); i++) {
+                // Merge if gap between bands is less than box height
+                if (bleedBands[i].minY <=
+                    merged.back().maxY + cropMarkMaxLength) {
+                  merged.back().maxY =
+                      std::max(merged.back().maxY, bleedBands[i].maxY);
+                  // Widen X range to union of both bands
+                  merged.back().minX =
+                      std::min(merged.back().minX, bleedBands[i].minX);
+                  merged.back().maxX =
+                      std::max(merged.back().maxX, bleedBands[i].maxX);
+                } else {
+                  merged.push_back(bleedBands[i]);
+                }
+              }
+              bleedBands = std::move(merged);
             }
 
-            // Find or increment Y count
-            bool foundY = false;
-            for (auto &[y, count] : yCounts) {
-              if (std::abs(corner.second - y) < coordTolerance) {
-                count++;
-                foundY = true;
-                break;
+            for (const auto &band : bleedBands) {
+              std::cerr << "DEBUG: Merged bleed Y-band: Y=" << band.minY
+                        << " to " << band.maxY << ", X interior=" << band.minX
+                        << " to " << band.maxX << std::endl;
+            }
+
+            // Step 3: Remove vertical lines within bleed-mark Y-bands
+            std::set<int> vLinesToRemove;
+            for (size_t i = 0; i < verticalCropLines.size(); i++) {
+              double vMinY =
+                  std::min(verticalCropLines[i].y1, verticalCropLines[i].y2);
+              double vMaxY =
+                  std::max(verticalCropLines[i].y1, verticalCropLines[i].y2);
+              double vX =
+                  (verticalCropLines[i].x1 + verticalCropLines[i].x2) / 2.0;
+              for (const auto &band : bleedBands) {
+                // Vertical line is part of bleed mark if:
+                //  - Its Y range is within the bleed band
+                //  - Its X position is in the bleed mark interior
+                //    (not at the extreme edges where crop marks are)
+                if (vMinY >= band.minY && vMaxY <= band.maxY &&
+                    vX >= band.minX && vX <= band.maxX) {
+                  vLinesToRemove.insert(static_cast<int>(i));
+                  break;
+                }
               }
             }
-            if (!foundY) {
-              yCounts[corner.second] = 1;
+
+            // Step 4: Apply filtering
+            if (!hLinesToRemove.empty() || !vLinesToRemove.empty()) {
+              std::vector<PDFLine> filteredH, filteredV;
+              for (size_t i = 0; i < horizontalCropLines.size(); i++) {
+                if (hLinesToRemove.find(static_cast<int>(i)) ==
+                    hLinesToRemove.end()) {
+                  filteredH.push_back(horizontalCropLines[i]);
+                }
+              }
+              for (size_t i = 0; i < verticalCropLines.size(); i++) {
+                if (vLinesToRemove.find(static_cast<int>(i)) ==
+                    vLinesToRemove.end()) {
+                  filteredV.push_back(verticalCropLines[i]);
+                }
+              }
+
+              std::cerr << "DEBUG: Filtered " << hLinesToRemove.size()
+                        << " horizontal and " << vLinesToRemove.size()
+                        << " vertical bleed mark lines" << std::endl;
+
+              horizontalCropLines = std::move(filteredH);
+              verticalCropLines = std::move(filteredV);
             }
           }
 
-          // Find the 2 X values with most corners
-          std::vector<std::pair<double, int>> xList(xCounts.begin(),
-                                                    xCounts.end());
-          std::sort(
-              xList.begin(), xList.end(),
-              [](const auto &a, const auto &b) { return a.second > b.second; });
+          std::cerr << "DEBUG: Found " << horizontalCropLines.size()
+                    << " horizontal crop mark lines, "
+                    << verticalCropLines.size() << " vertical" << std::endl;
 
-          // Find the 2 Y values with most corners
-          std::vector<std::pair<double, int>> yList(yCounts.begin(),
-                                                    yCounts.end());
-          std::sort(
-              yList.begin(), yList.end(),
-              [](const auto &a, const auto &b) { return a.second > b.second; });
+          // Find intersection points
+          const double intersectionTolerance = 5.0;
 
-          std::cerr << "DEBUG: Found " << xCounts.size()
-                    << " unique X coordinates, " << yCounts.size()
-                    << " unique Y coordinates" << std::endl;
+          for (const auto &hLine : horizontalCropLines) {
+            double hY = (hLine.y1 + hLine.y2) / 2.0;
 
-          if (xList.size() >= 2 && yList.size() >= 2) {
-            double leftX = std::min(xList[0].first, xList[1].first);
-            double rightX = std::max(xList[0].first, xList[1].first);
-            double bottomY = std::min(yList[0].first, yList[1].first);
-            double topY = std::max(yList[0].first, yList[1].first);
+            for (const auto &vLine : verticalCropLines) {
+              double vX = (vLine.x1 + vLine.x2) / 2.0;
 
-            double minX = leftX;
-            double maxX = rightX;
-            double minY = bottomY;
-            double maxY = topY;
+              double hMinX = std::min(hLine.x1, hLine.x2);
+              double hMaxX = std::max(hLine.x1, hLine.x2);
+              double vMinY = std::min(vLine.y1, vLine.y2);
+              double vMaxY = std::max(vLine.y1, vLine.y2);
 
-            std::cerr << "DEBUG: Most common coords - X: " << xList[0].first
-                      << " (n=" << xList[0].second << "), " << xList[1].first
-                      << " (n=" << xList[1].second << "); Y: " << yList[0].first
-                      << " (n=" << yList[0].second << "), " << yList[1].first
-                      << " (n=" << yList[1].second << ")" << std::endl;
+              bool hLineNearVLine = (vX >= hMinX - intersectionTolerance &&
+                                     vX <= hMaxX + intersectionTolerance);
+              bool vLineNearHLine = (hY >= vMinY - intersectionTolerance &&
+                                     hY <= vMaxY + intersectionTolerance);
 
-            result.linesBoundingBoxX = minX;
-            result.linesBoundingBoxY = minY;
-            result.linesBoundingBoxWidth = maxX - minX;
-            result.linesBoundingBoxHeight = maxY - minY;
-
-            std::cerr << "DEBUG: Crop box from crop marks: (" << minX << ", "
-                      << minY << ") to (" << maxX << ", " << maxY << ")"
-                      << std::endl;
-          } else {
-            // Fallback to original bounding box
-            result.linesBoundingBoxX = lineResult.boundingBoxX;
-            result.linesBoundingBoxY = lineResult.boundingBoxY;
-            result.linesBoundingBoxWidth = lineResult.boundingBoxWidth;
-            result.linesBoundingBoxHeight = lineResult.boundingBoxHeight;
-
-            std::cerr << "DEBUG: Not enough crop marks found ("
-                      << cropMarkCorners.size() << "), using line bounding box"
-                      << std::endl;
+              if (hLineNearVLine && vLineNearHLine) {
+                cropMarkCorners.push_back({vX, hY});
+              }
+            }
           }
-        }
+
+          std::cerr << "DEBUG: Found " << cropMarkCorners.size()
+                    << " crop mark intersection points" << std::endl;
+
+          // Calculate interior box from crop mark corners
+          if (cropMarkCorners.size() >= 4) {
+            // Cluster nearby corners together (many duplicates from multiple
+            // line widths)
+            const double clusterTolerance = 5.0;
+            std::vector<std::pair<double, double>> uniqueCorners;
+
+            for (const auto &corner : cropMarkCorners) {
+              bool foundCluster = false;
+              for (auto &unique : uniqueCorners) {
+                double dx = corner.first - unique.first;
+                double dy = corner.second - unique.second;
+                double dist = std::sqrt(dx * dx + dy * dy);
+
+                if (dist < clusterTolerance) {
+                  unique.first = (unique.first + corner.first) / 2.0;
+                  unique.second = (unique.second + corner.second) / 2.0;
+                  foundCluster = true;
+                  break;
+                }
+              }
+
+              if (!foundCluster) {
+                uniqueCorners.push_back(corner);
+              }
+            }
+
+            std::cerr << "DEBUG: Clustered " << cropMarkCorners.size()
+                      << " corners to " << uniqueCorners.size()
+                      << " unique corners" << std::endl;
+
+            // Find the 4 crop mark corners by grouping by X and Y coordinates
+            // The 4 actual crop marks will share 2 X values and 2 Y values
+            std::map<double, int> xCounts;
+            std::map<double, int> yCounts;
+
+            const double coordTolerance = 10.0;
+
+            // Count corners at each X and Y coordinate
+            for (const auto &corner : uniqueCorners) {
+              // Find or increment X count
+              bool foundX = false;
+              for (auto &[x, count] : xCounts) {
+                if (std::abs(corner.first - x) < coordTolerance) {
+                  count++;
+                  foundX = true;
+                  break;
+                }
+              }
+              if (!foundX) {
+                xCounts[corner.first] = 1;
+              }
+
+              // Find or increment Y count
+              bool foundY = false;
+              for (auto &[y, count] : yCounts) {
+                if (std::abs(corner.second - y) < coordTolerance) {
+                  count++;
+                  foundY = true;
+                  break;
+                }
+              }
+              if (!foundY) {
+                yCounts[corner.second] = 1;
+              }
+            }
+
+            // Find the 2 X values with most corners
+            std::vector<std::pair<double, int>> xList(xCounts.begin(),
+                                                      xCounts.end());
+            std::sort(xList.begin(), xList.end(),
+                      [](const auto &a, const auto &b) {
+                        return a.second > b.second;
+                      });
+
+            // Find the 2 Y values with most corners
+            std::vector<std::pair<double, int>> yList(yCounts.begin(),
+                                                      yCounts.end());
+            std::sort(yList.begin(), yList.end(),
+                      [](const auto &a, const auto &b) {
+                        return a.second > b.second;
+                      });
+
+            std::cerr << "DEBUG: Found " << xCounts.size()
+                      << " unique X coordinates, " << yCounts.size()
+                      << " unique Y coordinates" << std::endl;
+
+            if (xList.size() >= 2 && yList.size() >= 2) {
+              double leftX = std::min(xList[0].first, xList[1].first);
+              double rightX = std::max(xList[0].first, xList[1].first);
+              double bottomY = std::min(yList[0].first, yList[1].first);
+              double topY = std::max(yList[0].first, yList[1].first);
+
+              double minX = leftX;
+              double maxX = rightX;
+              double minY = bottomY;
+              double maxY = topY;
+
+              std::cerr << "DEBUG: Most common coords - X: " << xList[0].first
+                        << " (n=" << xList[0].second << "), " << xList[1].first
+                        << " (n=" << xList[1].second
+                        << "); Y: " << yList[0].first
+                        << " (n=" << yList[0].second << "), " << yList[1].first
+                        << " (n=" << yList[1].second << ")" << std::endl;
+
+              result.linesBoundingBoxX = minX;
+              result.linesBoundingBoxY = minY;
+              result.linesBoundingBoxWidth = maxX - minX;
+              result.linesBoundingBoxHeight = maxY - minY;
+              result.hasCropMarks = true;
+
+              std::cerr << "DEBUG: Crop box from crop marks: (" << minX << ", "
+                        << minY << ") to (" << maxX << ", " << maxY << ")"
+                        << std::endl;
+            } else {
+              // Fallback to original bounding box
+              result.linesBoundingBoxX = lineResult.boundingBoxX;
+              result.linesBoundingBoxY = lineResult.boundingBoxY;
+              result.linesBoundingBoxWidth = lineResult.boundingBoxWidth;
+              result.linesBoundingBoxHeight = lineResult.boundingBoxHeight;
+
+              std::cerr << "DEBUG: Not enough crop marks found ("
+                        << cropMarkCorners.size()
+                        << "), using line bounding box" << std::endl;
+            }
+          }
+        } // end else (no TrimBox — use crop mark detection)
       }
     } catch (const std::exception &e) {
       std::cerr << "DEBUG: Line extraction threw exception: " << e.what()
@@ -1894,6 +2689,32 @@ OCRAnalysis::extractPDFElements(const std::string &pdfPath, double minRectSize,
           std::cerr << "DEBUG: Page crop box: origin(" << pageRect.x() << ", "
                     << pageRect.y() << ") size(" << result.pageWidth << " x "
                     << result.pageHeight << ") points" << std::endl;
+
+          // Check for TrimBox — if the PDF has one that's smaller than the
+          // MediaBox/CropBox, it defines the intended content area precisely
+          // and we can skip unreliable geometric crop-mark detection.
+          poppler::rectf trimRect = page->page_rect(poppler::trim_box);
+          poppler::rectf mediaRect = page->page_rect(poppler::media_box);
+
+          // TrimBox is meaningful if it's strictly smaller than MediaBox
+          // (with a tolerance of 1pt to avoid floating-point noise)
+          const double trimTolerance = 1.0;
+          bool hasTrimBox =
+              (trimRect.width() > 0 && trimRect.height() > 0 &&
+               (trimRect.width() < mediaRect.width() - trimTolerance ||
+                trimRect.height() < mediaRect.height() - trimTolerance));
+
+          if (hasTrimBox) {
+            std::cerr << "DEBUG: TrimBox found: origin(" << trimRect.x() << ", "
+                      << trimRect.y() << ") size(" << trimRect.width() << " x "
+                      << trimRect.height() << ") points" << std::endl;
+            // TrimBox is logged but NOT used as content area —
+            // crop mark detection is more reliable for these PDFs.
+          } else {
+            std::cerr << "DEBUG: No meaningful TrimBox found, will use crop "
+                         "mark detection"
+                      << std::endl;
+          }
         }
       }
     } catch (const std::exception &e) {
@@ -1919,6 +2740,82 @@ OCRAnalysis::extractPDFElements(const std::string &pdfPath, double minRectSize,
       std::chrono::duration<double, std::milli>(endTime - startTime).count();
 
   return result;
+}
+
+int OCRAnalysis::writeAllImages(const std::string &pdfPath,
+                                const std::string &outputDir) {
+  try {
+    // Create output directory if it doesn't exist
+    std::filesystem::path outDir(outputDir);
+    std::filesystem::create_directories(outDir);
+
+    // Get PDF stem for naming files
+    std::filesystem::path pdfFilePath(pdfPath);
+    std::string pdfStem = pdfFilePath.stem().string();
+
+    // Load PDF using low-level Poppler API
+    GlobalParamsIniter globalParamsInit(nullptr);
+    auto fileName = std::make_unique<GooString>(pdfPath);
+    std::unique_ptr<PDFDoc> doc(new PDFDoc(std::move(fileName)));
+
+    if (!doc->isOk()) {
+      std::cerr << "ERROR: Failed to load PDF file: " << pdfPath << std::endl;
+      return -1;
+    }
+
+    int pageCount = doc->getNumPages();
+    if (pageCount < 1) {
+      std::cerr << "ERROR: PDF has no pages" << std::endl;
+      return -1;
+    }
+
+    std::cerr << "DEBUG: PDF has " << pageCount << " page(s)" << std::endl;
+
+    int totalSaved = 0;
+
+    for (int pageNum = 1; pageNum <= pageCount; pageNum++) {
+      // Extract images from this page
+      ImageExtractorOutputDev outputDev;
+      outputDev.setDoc(doc.get());
+      outputDev.setPageNumber(pageNum);
+
+      doc->displayPage(&outputDev, pageNum, 72.0, 72.0, 0, true, false, false);
+
+      auto images = std::move(outputDev.getImages());
+      std::cerr << "DEBUG: Page " << pageNum << ": found " << images.size()
+                << " embedded image(s)" << std::endl;
+
+      for (size_t i = 0; i < images.size(); i++) {
+        const auto &img = images[i];
+        if (img.image.empty()) {
+          std::cerr << "DEBUG: Page " << pageNum << " image " << (i + 1)
+                    << ": empty, skipping" << std::endl;
+          continue;
+        }
+
+        std::string filename =
+            (outDir / (pdfStem + "_page" + std::to_string(pageNum) + "_image" +
+                       std::to_string(i + 1) + ".png"))
+                .string();
+
+        if (cv::imwrite(filename, img.image)) {
+          std::cout << "Saved: " << filename << " (" << img.image.cols << "x"
+                    << img.image.rows << ", " << img.image.channels()
+                    << " channels)" << std::endl;
+          totalSaved++;
+        } else {
+          std::cerr << "ERROR: Failed to save: " << filename << std::endl;
+        }
+      }
+    }
+
+    std::cout << "Total images saved: " << totalSaved << std::endl;
+    return totalSaved;
+
+  } catch (const std::exception &e) {
+    std::cerr << "ERROR: writeAllImages failed: " << e.what() << std::endl;
+    return -1;
+  }
 }
 
 std::string OCRAnalysis::getTextFromRegion(const cv::Mat &image,
@@ -2831,8 +3728,13 @@ OCRAnalysis::PNGRenderResult OCRAnalysis::renderElementsToPNG(
               << ", pageHeight=" << elements.pageHeight << std::endl;
 
     if (maxX <= minX || maxY <= minY) {
-      result.errorMessage = "Invalid bounding box dimensions";
-      return result;
+      std::cerr << "DEBUG: Bounding box invalid after clamping, falling back "
+                   "to full page dimensions"
+                << std::endl;
+      minX = elements.pageX;
+      minY = elements.pageY;
+      maxX = elements.pageX + elements.pageWidth;
+      maxY = elements.pageY + elements.pageHeight;
     }
 
     // Calculate dimensions in points and pixels
@@ -2893,16 +3795,25 @@ OCRAnalysis::PNGRenderResult OCRAnalysis::renderElementsToPNG(
     maxX = cropBoxMaxX;
     maxY = cropBoxMaxY;
 
-    std::cerr << "DEBUG: Using crop box from crop marks: (" << minX << ", "
-              << minY << ") to (" << maxX << ", " << maxY << ")" << std::endl;
+    std::cerr << "DEBUG: Final content area: (" << minX << ", " << minY
+              << ") to (" << maxX << ", " << maxY << ")"
+              << (elements.hasCropMarks ? " [from crop marks]"
+                                        : " [from largest rect/elements]")
+              << std::endl;
 
-    // If there's no text in the PDF but there are images, perform OCR on the
-    // images
+    // Perform OCR on embedded images ONLY if crop marks were NOT detected.
+    // When crop marks are present, images are treated as purely visual
+    // elements to render rather than sources of additional text.
     std::vector<TextRegion> ocrTextLines;
-    if (elements.textLines.empty() && !elements.images.empty()) {
-      std::cerr
-          << "DEBUG: No text found in PDF, performing OCR on embedded images..."
-          << std::endl;
+    if (elements.hasCropMarks) {
+      if (!elements.images.empty()) {
+        std::cerr << "DEBUG: Crop marks detected — skipping OCR on "
+                  << elements.images.size()
+                  << " embedded image(s); will render as-is" << std::endl;
+      }
+    } else if (!elements.images.empty()) {
+      std::cerr << "DEBUG: Performing OCR on " << elements.images.size()
+                << " embedded image(s)..." << std::endl;
 
       // Initialize OCR engine if not already initialized
       if (!m_initialized) {
@@ -2971,7 +3882,70 @@ OCRAnalysis::PNGRenderResult OCRAnalysis::renderElementsToPNG(
                     << ocrTextLines.size() << std::endl;
         }
       } // end if (m_initialized)
-    } // end if (elements.textLines.empty() && !elements.images.empty())
+    } // end if (!elements.images.empty())
+
+    // -----------------------------------------------------------
+    // Use DataMatrix barcodes already detected in extractPDFElements
+    // -----------------------------------------------------------
+    // dataMatrixZones tracks bounding boxes in PDF coordinates so that
+    // overlapping OCR text can be excluded later.
+    struct DMZone {
+      double left, top, right, bottom; // PDF coordinates
+    };
+    std::vector<DMZone> dataMatrixZones;
+
+    for (const auto &dm : elements.dataMatrices) {
+      dataMatrixZones.push_back(
+          {dm.x, dm.y, dm.x + dm.width, dm.y + dm.height});
+
+      // Store a DATAMATRIX rendered element; its relative
+      // coordinates are computed later once imageWidth/imageHeight
+      // are determined.  For now keep the raw PDF coordinates in a
+      // temporary struct so we can convert after the image size is set.
+      RenderedElement elem;
+      elem.type = RenderedElement::DATAMATRIX;
+      elem.barcodeText = dm.text;
+      elem.image = dm.image;
+      // Temporarily store PDF coords — will be converted to relative
+      // after imageWidth/imageHeight are known.
+      elem.relativeX = dm.x + dm.width / 2.0;  // centre X in PDF pts
+      elem.relativeY = dm.y + dm.height / 2.0; // centre Y in PDF pts
+      elem.relativeWidth = dm.width;           // width in PDF pts
+      elem.relativeHeight = dm.height;         // height in PDF pts
+      result.elements.push_back(elem);
+
+      std::cerr << "DEBUG: Using pre-detected DataMatrix \""
+                << dm.text.substr(0, 30) << "\" at PDF (" << dm.x << ", "
+                << dm.y << ") size " << dm.width << "x" << dm.height
+                << std::endl;
+    }
+
+    // Remove OCR text lines that overlap with DataMatrix zones
+    if (!dataMatrixZones.empty() && !ocrTextLines.empty()) {
+      auto before = ocrTextLines.size();
+      ocrTextLines.erase(
+          std::remove_if(ocrTextLines.begin(), ocrTextLines.end(),
+                         [&dataMatrixZones](const TextRegion &tr) {
+                           double cx =
+                               tr.boundingBox.x + tr.boundingBox.width / 2.0;
+                           double cy =
+                               tr.boundingBox.y + tr.boundingBox.height / 2.0;
+                           for (const auto &zone : dataMatrixZones) {
+                             if (cx >= zone.left && cx <= zone.right &&
+                                 cy >= zone.top && cy <= zone.bottom) {
+                               return true; // overlaps — remove
+                             }
+                           }
+                           return false;
+                         }),
+          ocrTextLines.end());
+      auto removed = before - ocrTextLines.size();
+      if (removed > 0) {
+        std::cerr << "DEBUG: Removed " << removed
+                  << " OCR text line(s) overlapping DataMatrix zone(s)"
+                  << std::endl;
+      }
+    }
 
     // Use crop box dimensions for image size
     const double margin = 0.0;
@@ -2985,6 +3959,33 @@ OCRAnalysis::PNGRenderResult OCRAnalysis::renderElementsToPNG(
 
     result.imageWidth = imageWidth;
     result.imageHeight = imageHeight;
+
+    // Now convert any DATAMATRIX elements from temporary PDF coords
+    // to proper relative centre-point coordinates.
+    for (auto &elem : result.elements) {
+      if (elem.type != RenderedElement::DATAMATRIX)
+        continue;
+      // elem.relativeX/Y currently hold PDF centre coords;
+      // elem.relativeWidth/Height hold PDF extent.
+      double pdfCX = elem.relativeX;
+      double pdfCY = elem.relativeY;
+      double pdfW = elem.relativeWidth;
+      double pdfH = elem.relativeHeight;
+
+      // Convert to rendering coords — these are derived from image
+      // pixel space (top-left origin) so NO Y-flip is needed.
+      double renderCX = pdfCX - minX;
+      double renderCY = pdfCY - minY; // already top-left origin
+      double pxCX = renderCX * scale;
+      double pxCY = renderCY * scale;
+      double pxW = pdfW * scale;
+      double pxH = pdfH * scale;
+
+      elem.relativeX = pxCX / imageWidth;
+      elem.relativeY = pxCY / imageHeight;
+      elem.relativeWidth = pxW / imageWidth;
+      elem.relativeHeight = pxH / imageHeight;
+    }
 
     // Create output filename
     std::filesystem::path pdfFilePath(pdfPath);
@@ -3004,6 +4005,118 @@ OCRAnalysis::PNGRenderResult OCRAnalysis::renderElementsToPNG(
               << " pixels" << std::endl;
 
 #ifdef HAVE_CAIRO
+
+    // ---- Full-page rasterization path for crop-mark PDFs ----------
+    // When crop marks are detected, use Poppler's SplashOutputDev to
+    // rasterize the entire page at the target DPI, then crop to the
+    // crop box.  This captures EVERYTHING — vector graphics, images,
+    // text — without relying on element-by-element reconstruction.
+    if (elements.hasCropMarks) {
+      std::cerr << "DEBUG: Using SplashOutputDev full-page rasterization "
+                   "(crop marks mode)"
+                << std::endl;
+
+      try {
+        GlobalParamsIniter globalParamsInit(nullptr);
+
+        auto fileName = std::make_unique<GooString>(pdfPath);
+        std::unique_ptr<PDFDoc> doc(new PDFDoc(std::move(fileName)));
+
+        if (!doc->isOk()) {
+          result.errorMessage = "Failed to load PDF for rasterization";
+          return result;
+        }
+
+        // Create a SplashOutputDev that renders to RGB
+        SplashColor paperColor;
+        paperColor[0] = 255;
+        paperColor[1] = 255;
+        paperColor[2] = 255;
+        SplashOutputDev splashOut(splashModeRGB8, 4, false, paperColor);
+        splashOut.startDoc(doc.get());
+
+        // Render page 1 at the requested DPI
+        doc->displayPage(&splashOut, 1, dpi, dpi, 0, true, false, false);
+
+        SplashBitmap *bitmap = splashOut.getBitmap();
+        if (!bitmap) {
+          result.errorMessage = "SplashOutputDev returned null bitmap";
+          return result;
+        }
+
+        int bmpW = bitmap->getWidth();
+        int bmpH = bitmap->getHeight();
+        int bmpRowSize = bitmap->getRowSize();
+
+        std::cerr << "DEBUG: Full page raster: " << bmpW << "x" << bmpH
+                  << " pixels (row size " << bmpRowSize << ")" << std::endl;
+
+        // Convert SplashBitmap (RGB) → OpenCV Mat (BGR)
+        cv::Mat fullPage(bmpH, bmpW, CV_8UC3);
+        unsigned char *splashData = bitmap->getDataPtr();
+        for (int row = 0; row < bmpH; row++) {
+          const unsigned char *src = splashData + row * bmpRowSize;
+          unsigned char *dst = fullPage.ptr<unsigned char>(row);
+          for (int col = 0; col < bmpW; col++) {
+            dst[col * 3 + 0] = src[col * 3 + 2]; // B
+            dst[col * 3 + 1] = src[col * 3 + 1]; // G
+            dst[col * 3 + 2] = src[col * 3 + 0]; // R
+          }
+        }
+
+        // Crop to the crop box.
+        // minX/minY/maxX/maxY are in PDF points (origin top-left in
+        // Poppler's coordinate system when upsideDown() is true, which
+        // SplashOutputDev defaults to).
+        // Poppler renders with (0,0) at the top-left of the MediaBox.
+        // PDF coordinates have (0,0) at bottom-left, but the text/image
+        // extraction already converts to top-left.  However, the crop
+        // box values we have (minX, minY) are in the original PDF
+        // coordinate system (bottom-left origin), so we need to convert Y.
+        double fullPageHeightPt = elements.pageY + elements.pageHeight;
+        int cropX = static_cast<int>((minX - elements.pageX) * scale);
+        int cropY = static_cast<int>((minY - elements.pageY) * scale);
+        int cropW = static_cast<int>((maxX - minX) * scale);
+        int cropH = static_cast<int>((maxY - minY) * scale);
+
+        // Clamp to bitmap bounds
+        cropX = std::max(0, std::min(cropX, bmpW - 1));
+        cropY = std::max(0, std::min(cropY, bmpH - 1));
+        cropW = std::min(cropW, bmpW - cropX);
+        cropH = std::min(cropH, bmpH - cropY);
+
+        std::cerr << "DEBUG: Crop region: x=" << cropX << ", y=" << cropY
+                  << ", w=" << cropW << ", h=" << cropH << std::endl;
+
+        cv::Mat cropped =
+            fullPage(cv::Rect(cropX, cropY, cropW, cropH)).clone();
+
+        // Write PNG
+        cv::imwrite(outputPath, cropped);
+
+        std::cerr << "PNG rendered successfully (rasterised): " << outputPath
+                  << std::endl;
+        std::cerr << "  Final image: " << cropped.cols << "x" << cropped.rows
+                  << " pixels" << std::endl;
+
+        // Update result dimensions
+        result.imageWidth = cropped.cols;
+        result.imageHeight = cropped.rows;
+        // Note: relative coordinates in result.elements are already set
+        // correctly as fractions of the crop box, which matches this cropped
+        // image.
+
+        result.success = true;
+        return result;
+
+      } catch (const std::exception &e) {
+        std::cerr << "WARNING: SplashOutputDev rasterisation failed ("
+                  << e.what() << "), falling back to Cairo" << std::endl;
+        // Fall through to Cairo element-by-element rendering
+      }
+    }
+    // ---- End SplashOutputDev path ---------------------------------
+
     // Create Cairo image surface
     cairo_surface_t *surface = cairo_image_surface_create(
         CAIRO_FORMAT_ARGB32, imageWidth, imageHeight);
@@ -3065,13 +4178,18 @@ OCRAnalysis::PNGRenderResult OCRAnalysis::renderElementsToPNG(
         cairo_rectangle(cr, x, y, clippedWidth, clippedHeight);
         cairo_stroke(cr);
 
-        // Add to result
+        // Add to result -- centre-point relative coordinates
+        double pxX = x * scale;
+        double pxY = y * scale;
+        double pxW = clippedWidth * scale;
+        double pxH = clippedHeight * scale;
+
         RenderedElement elem;
         elem.type = RenderedElement::RECTANGLE;
-        elem.pixelX = static_cast<int>(x * scale);
-        elem.pixelY = static_cast<int>(y * scale);
-        elem.pixelWidth = static_cast<int>(clippedWidth * scale);
-        elem.pixelHeight = static_cast<int>(clippedHeight * scale);
+        elem.relativeX = (pxX + pxW / 2.0) / imageWidth;
+        elem.relativeY = (pxY + pxH / 2.0) / imageHeight;
+        elem.relativeWidth = pxW / imageWidth;
+        elem.relativeHeight = pxH / imageHeight;
         result.elements.push_back(elem);
       }
       */
@@ -3106,147 +4224,135 @@ OCRAnalysis::PNGRenderResult OCRAnalysis::renderElementsToPNG(
       cairo_line_to(cr, x2, y2);
       cairo_stroke(cr);
 
-      // Add to result with endpoint coordinates
+      // Add to result -- start/end relative coordinates
+      double pxX1 = x1 * scale;
+      double pxY1 = y1 * scale;
+      double pxX2 = x2 * scale;
+      double pxY2 = y2 * scale;
+
       RenderedElement elem;
       elem.type = RenderedElement::LINE;
-      elem.pixelX = static_cast<int>(x1 * scale);
-      elem.pixelY = static_cast<int>(y1 * scale);
-      elem.pixelX2 = static_cast<int>(x2 * scale);
-      elem.pixelY2 = static_cast<int>(y2 * scale);
-      elem.pixelWidth = static_cast<int>(std::abs(x2 - x1) * scale);
-      elem.pixelHeight = static_cast<int>(std::abs(y2 - y1) * scale);
+      elem.relativeX = pxX1 / imageWidth;
+      elem.relativeY = pxY1 / imageHeight;
+      elem.relativeX2 = pxX2 / imageWidth;
+      elem.relativeY2 = pxY2 / imageHeight;
+      elem.relativeWidth = std::abs(pxX2 - pxX1) / imageWidth;
+      elem.relativeHeight = std::abs(pxY2 - pxY1) / imageHeight;
       result.elements.push_back(elem);
     }
 
     // Draw images (PDF bottom-left origin -> convert to top-left)
-    // DISABLED: Images are often decorative or cause rendering issues
-    // They are still tracked in the elements list but not rendered
-    /*
-    for (const auto &img : elements.images) {
-      // Clip image to content bounding box
-      double imgLeft = std::max(img.x, minX);
-      double imgTop = std::max(img.y, minY);
-      double imgRight = std::min(img.x + img.displayWidth, maxX);
-      double imgBottom = std::min(img.y + img.displayHeight, maxY);
+    // Only render images when crop marks define the content area;
+    // in that case images are purely visual and not OCR'd.
+    if (elements.hasCropMarks) {
+      for (const auto &img : elements.images) {
+        // Clip image to content bounding box
+        double imgLeft = std::max(img.x, minX);
+        double imgTop = std::max(img.y, minY);
+        double imgRight = std::min(img.x + img.displayWidth, maxX);
+        double imgBottom = std::min(img.y + img.displayHeight, maxY);
 
-      std::cerr << "DEBUG: Image at (" << img.x << ", " << img.y
-                << "), size: " << img.displayWidth << " x " << img.displayHeight
-                << ", clipped bounds: (" << imgLeft << ", " << imgTop
-                << ") to (" << imgRight << ", " << imgBottom << ")"
-                << std::endl;
+        std::cerr << "DEBUG: Image at (" << img.x << ", " << img.y
+                  << "), size: " << img.displayWidth << " x "
+                  << img.displayHeight << ", clipped bounds: (" << imgLeft
+                  << ", " << imgTop << ") to (" << imgRight << ", " << imgBottom
+                  << ")" << std::endl;
 
-      // Skip if image is completely outside content area
-      if (imgLeft >= imgRight || imgTop >= imgBottom) {
-        std::cerr << "DEBUG: Skipping image - outside content area"
-                  << std::endl;
-        continue;
-      }
-
-      // Calculate clipped dimensions
-      double clippedWidth = imgRight - imgLeft;
-      double clippedHeight = imgBottom - imgTop;
-      double offsetX = imgLeft - img.x; // How much we clipped from left
-      double offsetY = imgTop - img.y;  // How much we clipped from top
-
-      double x = img.x - minX + margin;
-      // Convert from PDF bottom-left to Cairo top-left
-      double y = pageHeightPt - (img.y - minY + img.displayHeight) - margin;
-
-      if (!img.image.empty()) {
-        // Convert cv::Mat to Cairo surface and draw
-        cairo_save(cr);
-
-        // For rotated images, we need special handling
-        bool is90DegRotation =
-            std::abs(std::abs(img.rotationAngle) - M_PI / 2.0) < 0.1;
-
-        if (is90DegRotation) {
-          // For 90-degree rotation:
-          // The AABB position (x,y) and dimensions (displayWidth,
-          // displayHeight) are correct But we need to rotate the image
-          // content
-
-          cairo_translate(cr, x, y);
-
-          // Move to the center of the AABB
-          cairo_translate(cr, img.displayWidth / 2.0, img.displayHeight / 2.0);
-
-          // Rotate (negate because Cairo's Y-axis is flipped)
-          cairo_rotate(cr, -img.rotationAngle);
-
-          // For 90-degree rotation, the image dimensions are swapped
-          // Original image is width x height pixels
-          // After rotation, it occupies height x width in the rotated space
-          // We need to scale to fit displayHeight x displayWidth
-          double scaleX =
-              img.displayHeight / static_cast<double>(img.image.cols);
-          double scaleY =
-              img.displayWidth / static_cast<double>(img.image.rows);
-          cairo_scale(cr, scaleX, scaleY);
-
-          // Move so that the image center is at origin
-          cairo_translate(cr, -img.image.cols / 2.0, -img.image.rows / 2.0);
-
-        } else {
-          // No rotation or non-90-degree rotation
-          cairo_translate(cr, x, y);
-
-          double scaleX =
-              img.displayWidth / static_cast<double>(img.image.cols);
-          double scaleY =
-              img.displayHeight / static_cast<double>(img.image.rows);
-          cairo_scale(cr, scaleX, scaleY);
-        }
-
-        // Convert BGR to RGB
-        cv::Mat rgbImage;
-        if (img.image.channels() == 1) {
-          cv::cvtColor(img.image, rgbImage, cv::COLOR_GRAY2RGB);
-        } else if (img.image.channels() == 3) {
-          cv::cvtColor(img.image, rgbImage, cv::COLOR_BGR2RGB);
-        } else if (img.image.channels() == 4) {
-          cv::cvtColor(img.image, rgbImage, cv::COLOR_BGRA2RGB);
-        } else {
-          cairo_restore(cr);
+        // Skip if image is completely outside content area
+        if (imgLeft >= imgRight || imgTop >= imgBottom) {
+          std::cerr << "DEBUG: Skipping image - outside content area"
+                    << std::endl;
           continue;
         }
 
-        // Create Cairo surface from RGB image
-        cairo_surface_t *imgSurface = cairo_image_surface_create(
-            CAIRO_FORMAT_RGB24, rgbImage.cols, rgbImage.rows);
-        unsigned char *data = cairo_image_surface_get_data(imgSurface);
-        int stride = cairo_image_surface_get_stride(imgSurface);
+        double x = img.x - minX + margin;
+        // Convert from PDF bottom-left to Cairo top-left
+        double y = pageHeightPt - (img.y - minY + img.displayHeight) - margin;
 
-        // Copy pixel data (Cairo uses BGRA on little-endian, but we have RGB)
-        for (int row = 0; row < rgbImage.rows; row++) {
-          for (int col = 0; col < rgbImage.cols; col++) {
-            cv::Vec3b pixel = rgbImage.at<cv::Vec3b>(row, col);
-            int offset = row * stride + col * 4;
-            data[offset + 0] = pixel[2]; // B
-            data[offset + 1] = pixel[1]; // G
-            data[offset + 2] = pixel[0]; // R
-            data[offset + 3] = 255;      // A
+        if (!img.image.empty()) {
+          // Convert cv::Mat to Cairo surface and draw
+          cairo_save(cr);
+
+          // For rotated images, we need special handling
+          bool is90DegRotation =
+              std::abs(std::abs(img.rotationAngle) - M_PI / 2.0) < 0.1;
+
+          if (is90DegRotation) {
+            cairo_translate(cr, x, y);
+            cairo_translate(cr, img.displayWidth / 2.0,
+                            img.displayHeight / 2.0);
+            cairo_rotate(cr, -img.rotationAngle);
+
+            double scaleX =
+                img.displayHeight / static_cast<double>(img.image.cols);
+            double scaleY =
+                img.displayWidth / static_cast<double>(img.image.rows);
+            cairo_scale(cr, scaleX, scaleY);
+            cairo_translate(cr, -img.image.cols / 2.0, -img.image.rows / 2.0);
+          } else {
+            cairo_translate(cr, x, y);
+            double scaleX =
+                img.displayWidth / static_cast<double>(img.image.cols);
+            double scaleY =
+                img.displayHeight / static_cast<double>(img.image.rows);
+            cairo_scale(cr, scaleX, scaleY);
           }
+
+          // Convert BGR to RGB
+          cv::Mat rgbImage;
+          if (img.image.channels() == 1) {
+            cv::cvtColor(img.image, rgbImage, cv::COLOR_GRAY2RGB);
+          } else if (img.image.channels() == 3) {
+            cv::cvtColor(img.image, rgbImage, cv::COLOR_BGR2RGB);
+          } else if (img.image.channels() == 4) {
+            cv::cvtColor(img.image, rgbImage, cv::COLOR_BGRA2RGB);
+          } else {
+            cairo_restore(cr);
+            continue;
+          }
+
+          // Create Cairo surface from RGB image
+          cairo_surface_t *imgSurface = cairo_image_surface_create(
+              CAIRO_FORMAT_RGB24, rgbImage.cols, rgbImage.rows);
+          unsigned char *data = cairo_image_surface_get_data(imgSurface);
+          int stride = cairo_image_surface_get_stride(imgSurface);
+
+          // Copy pixel data (Cairo uses BGRA on little-endian)
+          for (int row = 0; row < rgbImage.rows; row++) {
+            for (int col = 0; col < rgbImage.cols; col++) {
+              cv::Vec3b pixel = rgbImage.at<cv::Vec3b>(row, col);
+              int offset = row * stride + col * 4;
+              data[offset + 0] = pixel[2]; // B
+              data[offset + 1] = pixel[1]; // G
+              data[offset + 2] = pixel[0]; // R
+              data[offset + 3] = 255;      // A
+            }
+          }
+
+          cairo_surface_mark_dirty(imgSurface);
+          cairo_set_source_surface(cr, imgSurface, 0, 0);
+          cairo_paint(cr);
+          cairo_surface_destroy(imgSurface);
+          cairo_restore(cr);
         }
 
-        cairo_set_source_surface(cr, imgSurface, 0, 0);
-        cairo_paint(cr);
-        cairo_surface_destroy(imgSurface);
-        cairo_restore(cr);
-      }
+        // Add to result -- centre-point relative coordinates
+        double pxX = x * scale;
+        double pxY = y * scale;
+        double pxW = img.displayWidth * scale;
+        double pxH = img.displayHeight * scale;
 
-      // Add to result
-      RenderedElement elem;
-      elem.type = RenderedElement::IMAGE;
-      elem.pixelX = static_cast<int>(x * scale);
-      elem.pixelY = static_cast<int>(y * scale);
-      elem.pixelWidth = static_cast<int>(img.displayWidth * scale);
-      elem.pixelHeight = static_cast<int>(img.displayHeight * scale);
-      elem.image = img.image.clone();
-      elem.rotationAngle = img.rotationAngle;
-      result.elements.push_back(elem);
+        RenderedElement elem;
+        elem.type = RenderedElement::IMAGE;
+        elem.relativeX = (pxX + pxW / 2.0) / imageWidth;
+        elem.relativeY = (pxY + pxH / 2.0) / imageHeight;
+        elem.relativeWidth = pxW / imageWidth;
+        elem.relativeHeight = pxH / imageHeight;
+        elem.image = img.image.clone();
+        elem.rotationAngle = img.rotationAngle;
+        result.elements.push_back(elem);
+      }
     }
-    */
 
     // Draw text (PDF bottom-left origin -> convert to top-left)
     // Only render text within the crop box
@@ -3289,8 +4395,8 @@ OCRAnalysis::PNGRenderResult OCRAnalysis::renderElementsToPNG(
       // Set font based on text region properties
       std::string fontFamily = text.fontName.empty() ? "Sans" : text.fontName;
       // Scale font size down - bounding box height includes
-      // ascenders/descenders so it's larger than the actual font size. Use 0.75
-      // as a scaling factor.
+      // ascenders/descenders so it's larger than the actual font size. Use
+      // 0.75 as a scaling factor.
       double fontSize = (text.fontSize > 0) ? (text.fontSize * 0.75) : 10.0;
 
       // Determine Cairo font slant
@@ -3307,13 +4413,20 @@ OCRAnalysis::PNGRenderResult OCRAnalysis::renderElementsToPNG(
       cairo_move_to(cr, x, y);
       cairo_show_text(cr, text.text.c_str());
 
-      // Add to result
+      // Add to result -- centre-point relative coordinates
+      // text y is currently the baseline; the bounding box top is at y minus
+      // the rendered height.
+      double pxX = x * scale;
+      double pxY = y * scale;
+      double pxW = text.boundingBox.width * scale;
+      double pxH = text.boundingBox.height * scale;
+
       RenderedElement elem;
       elem.type = RenderedElement::TEXT;
-      elem.pixelX = static_cast<int>(x * scale);
-      elem.pixelY = static_cast<int>(y * scale);
-      elem.pixelWidth = static_cast<int>(text.boundingBox.width * scale);
-      elem.pixelHeight = static_cast<int>(text.boundingBox.height * scale);
+      elem.relativeX = (pxX + pxW / 2.0) / imageWidth;
+      elem.relativeY = (pxY + pxH / 2.0) / imageHeight;
+      elem.relativeWidth = pxW / imageWidth;
+      elem.relativeHeight = pxH / imageHeight;
       elem.text = text.text;
       elem.fontName = fontFamily;
       elem.fontSize = fontSize;
@@ -3336,8 +4449,10 @@ OCRAnalysis::PNGRenderResult OCRAnalysis::renderElementsToPNG(
       }
 
       double x = text.boundingBox.x - minX + margin;
-      // Convert from PDF bottom-left to Cairo top-left
-      double y = pageHeightPt - (text.boundingBox.y - minY) - margin;
+      // OCR coordinates are already in top-left origin (from image pixel
+      // space), so NO Y-flip is needed — unlike PDF text which uses
+      // bottom-left origin.
+      double y = text.boundingBox.y - minY + margin;
 
       std::cerr << "DEBUG: Rendering OCR text at (" << x << ", " << y
                 << "), text: \"" << text.text.substr(0, 20) << "\""
@@ -3354,18 +4469,24 @@ OCRAnalysis::PNGRenderResult OCRAnalysis::renderElementsToPNG(
       cairo_move_to(cr, x, y);
       cairo_show_text(cr, text.text.c_str());
 
-      // Add to result
+      // Add to result -- centre-point relative coordinates
+      double pxX = x * scale;
+      double pxY = y * scale;
+      double pxW = text.boundingBox.width * scale;
+      double pxH = text.boundingBox.height * scale;
+
       RenderedElement elem;
       elem.type = RenderedElement::TEXT;
-      elem.pixelX = static_cast<int>(x * scale);
-      elem.pixelY = static_cast<int>(y * scale);
-      elem.pixelWidth = static_cast<int>(text.boundingBox.width * scale);
-      elem.pixelHeight = static_cast<int>(text.boundingBox.height * scale);
+      elem.relativeX = (pxX + pxW / 2.0) / imageWidth;
+      elem.relativeY = (pxY + pxH / 2.0) / imageHeight;
+      elem.relativeWidth = pxW / imageWidth;
+      elem.relativeHeight = pxH / imageHeight;
       elem.text = text.text;
       elem.fontName = fontFamily;
       elem.fontSize = fontSize;
       elem.isBold = false;
       elem.isItalic = false;
+      elem.ocrConfidence = text.confidence;
       result.elements.push_back(elem);
     }
 
@@ -3400,17 +4521,17 @@ void OCRAnalysis::sortByPosition(PNGRenderResult &result) {
   // Elements on the same horizontal line (similar Y) are sorted by X
   std::sort(result.elements.begin(), result.elements.end(),
             [](const RenderedElement &a, const RenderedElement &b) {
-              // Define tolerance for "same line" - elements within this Y
-              // difference are considered on the same horizontal line
-              const int Y_TOLERANCE = 5; // pixels
+              // Define tolerance for "same line" – fraction of image height
+              // (roughly equivalent to ~5px on a 1000px image)
+              const double Y_TOLERANCE = 0.005;
 
               // If Y positions are similar (within tolerance), sort by X
-              if (std::abs(a.pixelY - b.pixelY) <= Y_TOLERANCE) {
-                return a.pixelX < b.pixelX;
+              if (std::abs(a.relativeY - b.relativeY) <= Y_TOLERANCE) {
+                return a.relativeX < b.relativeX;
               }
 
               // Otherwise, sort by Y (top to bottom)
-              return a.pixelY < b.pixelY;
+              return a.relativeY < b.relativeY;
             });
 }
 
@@ -3442,9 +4563,9 @@ bool OCRAnalysis::alignAndMarkElements(const std::string &renderedImagePath,
       return false;
     }
 
-    std::cerr << "First text element: \"" << firstTextElement->text << "\" at ("
-              << firstTextElement->pixelX << ", " << firstTextElement->pixelY
-              << ")" << std::endl;
+    std::cerr << "First text element: \"" << firstTextElement->text
+              << "\" at rel(" << firstTextElement->relativeX << ", "
+              << firstTextElement->relativeY << ")" << std::endl;
 
     // Calculate scale factors if images have different dimensions
     double scaleX =
@@ -3554,14 +4675,27 @@ bool OCRAnalysis::alignAndMarkElements(const std::string &renderedImagePath,
           continue;
         }
 
-        // Scale element coordinates to original image space
-        int scaledElemX = static_cast<int>(elem.pixelX * scaleX);
-        int scaledElemY = static_cast<int>(elem.pixelY * scaleY);
-        int scaledElemWidth = static_cast<int>(elem.pixelWidth * scaleX);
-        int scaledElemHeight = static_cast<int>(elem.pixelHeight * scaleY);
+        // Convert relative coordinates to pixel coordinates in rendered image
+        // For TEXT, relativeX/Y is the centre, so derive top-left
+        int elemPixelX =
+            static_cast<int>((elem.relativeX - elem.relativeWidth / 2.0) *
+                             renderResult.imageWidth);
+        int elemPixelY =
+            static_cast<int>((elem.relativeY - elem.relativeHeight / 2.0) *
+                             renderResult.imageHeight);
+        int elemPixelW =
+            static_cast<int>(elem.relativeWidth * renderResult.imageWidth);
+        int elemPixelH =
+            static_cast<int>(elem.relativeHeight * renderResult.imageHeight);
 
-        // Define search region around the expected position (in original image
-        // space)
+        // Scale element coordinates to original image space
+        int scaledElemX = static_cast<int>(elemPixelX * scaleX);
+        int scaledElemY = static_cast<int>(elemPixelY * scaleY);
+        int scaledElemWidth = static_cast<int>(elemPixelW * scaleX);
+        int scaledElemHeight = static_cast<int>(elemPixelH * scaleY);
+
+        // Define search region around the expected position (in original
+        // image space)
         const int SEARCH_RADIUS = 150; // pixels to search in each direction
         int roiX = std::max(0, scaledElemX - SEARCH_RADIUS);
         int roiY = std::max(0, scaledElemY - SEARCH_RADIUS);
@@ -3726,8 +4860,8 @@ bool OCRAnalysis::alignAndMarkElements(const std::string &renderedImagePath,
           }
 
           const auto &otherElem = renderResult.elements[otherIdx];
-          double dx = elem.pixelX - otherElem.pixelX;
-          double dy = elem.pixelY - otherElem.pixelY;
+          double dx = elem.relativeX - otherElem.relativeX;
+          double dy = elem.relativeY - otherElem.relativeY;
           double dist = std::sqrt(dx * dx + dy * dy);
 
           if (dist < nearestDist) {
@@ -3776,10 +4910,22 @@ bool OCRAnalysis::alignAndMarkElements(const std::string &renderedImagePath,
         continue;
       }
 
-      int scaledElemX = static_cast<int>(elem.pixelX * scaleX);
-      int scaledElemY = static_cast<int>(elem.pixelY * scaleY);
-      int scaledElemWidth = static_cast<int>(elem.pixelWidth * scaleX);
-      int scaledElemHeight = static_cast<int>(elem.pixelHeight * scaleY);
+      // Convert relative coordinates to pixel coordinates in rendered image
+      int elemPixelX =
+          static_cast<int>((elem.relativeX - elem.relativeWidth / 2.0) *
+                           renderResult.imageWidth);
+      int elemPixelY =
+          static_cast<int>((elem.relativeY - elem.relativeHeight / 2.0) *
+                           renderResult.imageHeight);
+      int elemPixelW =
+          static_cast<int>(elem.relativeWidth * renderResult.imageWidth);
+      int elemPixelH =
+          static_cast<int>(elem.relativeHeight * renderResult.imageHeight);
+
+      int scaledElemX = static_cast<int>(elemPixelX * scaleX);
+      int scaledElemY = static_cast<int>(elemPixelY * scaleY);
+      int scaledElemWidth = static_cast<int>(elemPixelW * scaleX);
+      int scaledElemHeight = static_cast<int>(elemPixelH * scaleY);
 
       int adjustedX = scaledElemX;
       int adjustedY = scaledElemY;
@@ -3863,7 +5009,8 @@ bool OCRAnalysis::alignAndMarkElements(const std::string &renderedImagePath,
                     << " and " << box2.elemIdx << " (" << vOverlap << " pixels)"
                     << std::endl;
 
-          // Adjust Y position of lower box to avoid overlap (preserve height!)
+          // Adjust Y position of lower box to avoid overlap (preserve
+          // height!)
           if (box1.y < box2.y) {
             int newBox2Y = box1Bottom;
             box2.y = newBox2Y;
@@ -3894,7 +5041,8 @@ bool OCRAnalysis::alignAndMarkElements(const std::string &renderedImagePath,
         if (other.elemIdx == box.elemIdx)
           continue;
 
-        // Check if boxes are vertically aligned (could interfere horizontally)
+        // Check if boxes are vertically aligned (could interfere
+        // horizontally)
         int vOverlap = std::min(box.y + box.height, other.y + other.height) -
                        std::max(box.y, other.y);
         if (vOverlap <= 0)

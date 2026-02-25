@@ -217,6 +217,20 @@ public:
   };
 
   /**
+   * @brief Represents a DataMatrix barcode detected in a PDF
+   */
+  struct PDFDataMatrix {
+    std::string text;     ///< Decoded text content of the DataMatrix
+    cv::Mat image;        ///< Cropped image of the DataMatrix region
+    double x;             ///< X position on page (PDF coordinates)
+    double y;             ///< Y position on page (PDF coordinates)
+    double width;         ///< Width on page (PDF points)
+    double height;        ///< Height on page (PDF points)
+    int sourceImageIndex; ///< Index of source image (-1 if from rasterised
+                          ///< page)
+  };
+
+  /**
    * @brief Result of embedded image extraction
    */
   struct PDFEmbeddedImagesResult {
@@ -348,6 +362,9 @@ public:
     // Embedded images
     std::vector<PDFEmbeddedImage> images; ///< Actual embedded images
 
+    // DataMatrix barcodes
+    std::vector<PDFDataMatrix> dataMatrices; ///< Detected DataMatrix barcodes
+
     // Vector graphics (drawn paths)
     std::vector<PDFRectangle> rectangles; ///< Rectangular paths/boxes
     std::vector<PDFLine> graphicLines;    ///< Drawn line segments
@@ -358,6 +375,7 @@ public:
     int imageCount = 0;       ///< Number of images found
     int rectangleCount = 0;   ///< Number of rectangles found
     int graphicLineCount = 0; ///< Number of drawn lines found
+    int dataMatrixCount = 0;  ///< Number of DataMatrix barcodes found
 
     // Interior bounding box (largest box inside the found lines)
     double linesBoundingBoxX = 0;      ///< X position of interior box
@@ -370,6 +388,9 @@ public:
     double pageY = 0;      ///< Page crop box Y origin in points
     double pageWidth = 0;  ///< Page width in points
     double pageHeight = 0; ///< Page height in points
+
+    // Whether crop marks were detected and used to define the content area
+    bool hasCropMarks = false;
   };
 
   /**
@@ -379,17 +400,35 @@ public:
    * a single call:
    * - Text with position and orientation information
    * - Embedded images (actual image objects, not rendered pages)
+   * - DataMatrix barcodes (from embedded images and rasterised page)
    * - Rectangles (boxes, frames, borders)
    * - Lines (rules, underlines, table borders)
    *
    * @param pdfPath Path to the PDF file
    * @param minRectSize Minimum rectangle size in points (default: 5)
    * @param minLineLength Minimum line length in points (default: 5)
+   * @param imageOutputDir If non-empty, save extracted images and DataMatrix
+   *                       barcodes as PNG files in this directory
    * @return PDFElements containing all extracted elements
    */
   PDFElements extractPDFElements(const std::string &pdfPath,
                                  double minRectSize = 5.0,
-                                 double minLineLength = 5.0);
+                                 double minLineLength = 5.0,
+                                 const std::string &imageOutputDir = "");
+
+  /**
+   * @brief Extract all embedded images from a PDF and save them as PNG files
+   *
+   * This method extracts every embedded image from all pages of a PDF file
+   * and writes each one to the specified output folder as a PNG. Files are
+   * named <pdfStem>_page<P>_image<I>.png where P is the 1-based page number
+   * and I is the 1-based image index on that page.
+   *
+   * @param pdfPath Path to the PDF file
+   * @param outputDir Directory to write the PNG files into (created if needed)
+   * @return Number of images saved, or -1 on error
+   */
+  int writeAllImages(const std::string &pdfPath, const std::string &outputDir);
 
   /**
    * @brief Strip bleed marks from a PDF file
@@ -410,18 +449,37 @@ public:
   PDFElements stripBleedMarks(const std::string &pdfPath);
 
   /**
-   * @brief Structure to hold rendered element with pixel coordinates
+   * @brief Structure to hold rendered element in relative coordinates
+   *
+   * All coordinates are fractions (0.0 to 1.0) of the rendered image
+   * dimensions, with origin at top-left (0,0 = top-left corner).
+   *
+   * For TEXT, IMAGE, RECTANGLE and DATAMATRIX types the position
+   * (relativeX, relativeY) is the CENTRE of the bounding box, with
+   * relativeWidth and relativeHeight giving the full extent.
+   * To reconstruct the top-left corner on a target canvas:
+   *   topLeftX = (relativeX - relativeWidth / 2) * canvasWidth
+   *   topLeftY = (relativeY - relativeHeight / 2) * canvasHeight
+   *
+   * For LINE type, (relativeX, relativeY) is the start point and
+   * (relativeX2, relativeY2) is the end point.  relativeWidth / relativeHeight
+   * give the bounding-box extent of the line.
+   *
+   * DATAMATRIX elements are detected by scanning embedded images (or the
+   * whole page image for image-only PDFs) with the ZXing library.  They
+   * carry the decoded text in `barcodeText` and the cropped image region
+   * in `image`.  The region they occupy is excluded from subsequent OCR.
    */
   struct RenderedElement {
-    enum Type { TEXT, IMAGE, RECTANGLE, LINE };
+    enum Type { TEXT, IMAGE, RECTANGLE, LINE, DATAMATRIX };
 
     Type type;
-    int pixelX; ///< X coordinate in pixels (top-left for most, start point for
-                ///< lines)
-    int pixelY; ///< Y coordinate in pixels (top-left for most, start point for
-                ///< lines)
-    int pixelWidth;  ///< Width in pixels
-    int pixelHeight; ///< Height in pixels
+    double relativeX = 0.0; ///< X centre (TEXT/IMAGE/RECT/DM) or start X (LINE)
+                            ///< as fraction of image width  (0.0 = left)
+    double relativeY = 0.0; ///< Y centre (TEXT/IMAGE/RECT/DM) or start Y (LINE)
+                            ///< as fraction of image height (0.0 = top)
+    double relativeWidth = 0.0;  ///< Width  as fraction of image width
+    double relativeHeight = 0.0; ///< Height as fraction of image height
 
     // Text-specific fields
     std::string text;      ///< Text content (for TEXT type)
@@ -431,12 +489,18 @@ public:
     bool isItalic = false; ///< Whether font is italic (for TEXT type)
 
     // Image-specific fields
-    cv::Mat image; ///< Image data (for IMAGE type), properly rotated
+    cv::Mat image;              ///< Image data (for IMAGE / DATAMATRIX type)
     double rotationAngle = 0.0; ///< Rotation angle in radians (for IMAGE type)
 
-    // Line-specific fields
-    int pixelX2 = 0; ///< End X coordinate in pixels (for LINE type)
-    int pixelY2 = 0; ///< End Y coordinate in pixels (for LINE type)
+    // Line-specific fields (start point is relativeX/relativeY)
+    double relativeX2 = 0.0; ///< End X as fraction of image width  (LINE type)
+    double relativeY2 = 0.0; ///< End Y as fraction of image height (LINE type)
+
+    // Barcode / DataMatrix fields
+    std::string barcodeText; ///< Decoded text content (for DATAMATRIX type)
+
+    // OCR confidence (-1 = not OCR'd, i.e. native PDF text; 0-100 for OCR'd)
+    float ocrConfidence = -1.0f;
   };
 
   /**

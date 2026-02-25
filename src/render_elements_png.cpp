@@ -112,13 +112,18 @@ OCRAnalysis::renderElementsToPNG(const PDFElements &elements,
       cairo_rectangle(cr, x, y, rect.width, rect.height);
       cairo_stroke(cr);
 
-      // Add to result
+      // Add to result -- centre-point relative coordinates
+      double pxX = x * scale;
+      double pxY = y * scale;
+      double pxW = rect.width * scale;
+      double pxH = rect.height * scale;
+
       RenderedElement elem;
       elem.type = RenderedElement::RECTANGLE;
-      elem.pixelX = static_cast<int>(x * scale);
-      elem.pixelY = static_cast<int>(y * scale);
-      elem.pixelWidth = static_cast<int>(rect.width * scale);
-      elem.pixelHeight = static_cast<int>(rect.height * scale);
+      elem.relativeX = (pxX + pxW / 2.0) / imageWidth;
+      elem.relativeY = (pxY + pxH / 2.0) / imageHeight;
+      elem.relativeWidth = pxW / imageWidth;
+      elem.relativeHeight = pxH / imageHeight;
       result.elements.push_back(elem);
     }
 
@@ -135,13 +140,20 @@ OCRAnalysis::renderElementsToPNG(const PDFElements &elements,
       cairo_line_to(cr, x2, y2);
       cairo_stroke(cr);
 
-      // Add to result
+      // Add to result -- start/end relative coordinates
+      double pxX1 = x1 * scale;
+      double pxY1 = y1 * scale;
+      double pxX2 = x2 * scale;
+      double pxY2 = y2 * scale;
+
       RenderedElement elem;
       elem.type = RenderedElement::LINE;
-      elem.pixelX = static_cast<int>(std::min(x1, x2) * scale);
-      elem.pixelY = static_cast<int>(std::min(y1, y2) * scale);
-      elem.pixelWidth = static_cast<int>(std::abs(x2 - x1) * scale);
-      elem.pixelHeight = static_cast<int>(std::abs(y2 - y1) * scale);
+      elem.relativeX = pxX1 / imageWidth;
+      elem.relativeY = pxY1 / imageHeight;
+      elem.relativeX2 = pxX2 / imageWidth;
+      elem.relativeY2 = pxY2 / imageHeight;
+      elem.relativeWidth = std::abs(pxX2 - pxX1) / imageWidth;
+      elem.relativeHeight = std::abs(pxY2 - pxY1) / imageHeight;
       result.elements.push_back(elem);
     }
 
@@ -197,13 +209,18 @@ OCRAnalysis::renderElementsToPNG(const PDFElements &elements,
         cairo_restore(cr);
       }
 
-      // Add to result
+      // Add to result -- centre-point relative coordinates
+      double pxX = x * scale;
+      double pxY = y * scale;
+      double pxW = img.displayWidth * scale;
+      double pxH = img.displayHeight * scale;
+
       RenderedElement elem;
       elem.type = RenderedElement::IMAGE;
-      elem.pixelX = static_cast<int>(x * scale);
-      elem.pixelY = static_cast<int>(y * scale);
-      elem.pixelWidth = static_cast<int>(img.displayWidth * scale);
-      elem.pixelHeight = static_cast<int>(img.displayHeight * scale);
+      elem.relativeX = (pxX + pxW / 2.0) / imageWidth;
+      elem.relativeY = (pxY + pxH / 2.0) / imageHeight;
+      elem.relativeWidth = pxW / imageWidth;
+      elem.relativeHeight = pxH / imageHeight;
       elem.image = img.image.clone();
       result.elements.push_back(elem);
     }
@@ -221,13 +238,18 @@ OCRAnalysis::renderElementsToPNG(const PDFElements &elements,
       cairo_move_to(cr, x, y);
       cairo_show_text(cr, text.text.c_str());
 
-      // Add to result
+      // Add to result -- centre-point relative coordinates
+      double pxX = x * scale;
+      double pxY = (y - 10) * scale; // undo baseline offset for box top
+      double pxW = text.boundingBox.width * scale;
+      double pxH = text.boundingBox.height * scale;
+
       RenderedElement elem;
       elem.type = RenderedElement::TEXT;
-      elem.pixelX = static_cast<int>(x * scale);
-      elem.pixelY = static_cast<int>((y - 10) * scale);
-      elem.pixelWidth = static_cast<int>(text.boundingBox.width * scale);
-      elem.pixelHeight = static_cast<int>(text.boundingBox.height * scale);
+      elem.relativeX = (pxX + pxW / 2.0) / imageWidth;
+      elem.relativeY = (pxY + pxH / 2.0) / imageHeight;
+      elem.relativeWidth = pxW / imageWidth;
+      elem.relativeHeight = pxH / imageHeight;
       elem.text = text.text;
       result.elements.push_back(elem);
     }

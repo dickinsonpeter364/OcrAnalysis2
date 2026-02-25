@@ -64,7 +64,8 @@ int main(int argc, char *argv[]) {
     std::cout << "=== Rendered Elements (" << renderResult.elements.size()
               << " total) ===\n\n";
 
-    int textCount = 0, imageCount = 0, lineCount = 0, rectCount = 0;
+    int textCount = 0, imageCount = 0, lineCount = 0, rectCount = 0,
+        dataMatrixCount = 0;
 
     for (size_t i = 0; i < renderResult.elements.size(); i++) {
       const auto &elem = renderResult.elements[i];
@@ -74,10 +75,10 @@ int main(int argc, char *argv[]) {
       switch (elem.type) {
       case ocr::OCRAnalysis::RenderedElement::TEXT:
         std::cout << "TEXT\n";
-        std::cout << "  Position: (" << elem.pixelX << ", " << elem.pixelY
+        std::cout << "  Centre: (" << elem.relativeX << ", " << elem.relativeY
                   << ")\n";
-        std::cout << "  Size: " << elem.pixelWidth << "x" << elem.pixelHeight
-                  << " px\n";
+        std::cout << "  Size: " << elem.relativeWidth << " x "
+                  << elem.relativeHeight << "\n";
         std::cout << "  Content: \"" << elem.text << "\"\n";
         std::cout << "  Font: " << elem.fontName << " " << elem.fontSize
                   << "pt";
@@ -91,10 +92,10 @@ int main(int argc, char *argv[]) {
 
       case ocr::OCRAnalysis::RenderedElement::IMAGE:
         std::cout << "IMAGE\n";
-        std::cout << "  Position: (" << elem.pixelX << ", " << elem.pixelY
+        std::cout << "  Centre: (" << elem.relativeX << ", " << elem.relativeY
                   << ")\n";
-        std::cout << "  Size: " << elem.pixelWidth << "x" << elem.pixelHeight
-                  << " px\n";
+        std::cout << "  Size: " << elem.relativeWidth << " x "
+                  << elem.relativeHeight << "\n";
         std::cout << "  Image data: " << elem.image.cols << "x"
                   << elem.image.rows << " (" << elem.image.channels()
                   << " channels)\n";
@@ -105,22 +106,36 @@ int main(int argc, char *argv[]) {
 
       case ocr::OCRAnalysis::RenderedElement::LINE:
         std::cout << "LINE\n";
-        std::cout << "  Start: (" << elem.pixelX << ", " << elem.pixelY
+        std::cout << "  Start: (" << elem.relativeX << ", " << elem.relativeY
                   << ")\n";
-        std::cout << "  End: (" << elem.pixelX2 << ", " << elem.pixelY2
+        std::cout << "  End: (" << elem.relativeX2 << ", " << elem.relativeY2
                   << ")\n";
-        std::cout << "  Bounding box: " << elem.pixelWidth << "x"
-                  << elem.pixelHeight << " px\n";
+        std::cout << "  Bounding size: " << elem.relativeWidth << " x "
+                  << elem.relativeHeight << "\n";
         lineCount++;
         break;
 
       case ocr::OCRAnalysis::RenderedElement::RECTANGLE:
         std::cout << "RECTANGLE\n";
-        std::cout << "  Position: (" << elem.pixelX << ", " << elem.pixelY
+        std::cout << "  Centre: (" << elem.relativeX << ", " << elem.relativeY
                   << ")\n";
-        std::cout << "  Size: " << elem.pixelWidth << "x" << elem.pixelHeight
-                  << " px\n";
+        std::cout << "  Size: " << elem.relativeWidth << " x "
+                  << elem.relativeHeight << "\n";
         rectCount++;
+        break;
+
+      case ocr::OCRAnalysis::RenderedElement::DATAMATRIX:
+        std::cout << "DATAMATRIX\n";
+        std::cout << "  Centre: (" << elem.relativeX << ", " << elem.relativeY
+                  << ")\n";
+        std::cout << "  Size: " << elem.relativeWidth << " x "
+                  << elem.relativeHeight << "\n";
+        std::cout << "  Decoded text: \"" << elem.barcodeText << "\"\n";
+        if (!elem.image.empty()) {
+          std::cout << "  Cropped image: " << elem.image.cols << "x"
+                    << elem.image.rows << "\n";
+        }
+        dataMatrixCount++;
         break;
       }
       std::cout << "\n";
@@ -131,6 +146,7 @@ int main(int argc, char *argv[]) {
     std::cout << "Image elements: " << imageCount << "\n";
     std::cout << "Line elements: " << lineCount << "\n";
     std::cout << "Rectangle elements: " << rectCount << "\n";
+    std::cout << "DataMatrix elements: " << dataMatrixCount << "\n";
 
     return 0;
 
