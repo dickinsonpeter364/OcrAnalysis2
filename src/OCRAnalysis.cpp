@@ -2601,13 +2601,25 @@ OCRAnalysis::extractPDFElements(const std::string &pdfPath, double minRectSize,
         std::unique_ptr<poppler::page> page(doc->create_page(0));
         if (page) {
           poppler::rectf pageRect = page->page_rect();
+          int pageRotation = page->orientation(); // 0=portrait,1=landscape,etc.
+
+          // page_rect() returns unrotated MediaBox dimensions.
+          // For Rotate=90/270 the display axes are swapped, so width and
+          // height need to be exchanged to reflect the actual display extent
+          // (the same coordinate space used by LineExtractorOutputDev /
+          // crop-mark detection).
+          bool swapped = (pageRotation == poppler::page::landscape ||
+                          pageRotation == poppler::page::seascape);
+
           result.pageX = pageRect.x();
-          result.pageWidth = pageRect.width();
           result.pageY = pageRect.y();
-          result.pageHeight = pageRect.height();
+          result.pageWidth = swapped ? pageRect.height() : pageRect.width();
+          result.pageHeight = swapped ? pageRect.width() : pageRect.height();
+
           std::cerr << "DEBUG: Page crop box: origin(" << pageRect.x() << ", "
                     << pageRect.y() << ") size(" << result.pageWidth << " x "
-                    << result.pageHeight << ") points" << std::endl;
+                    << result.pageHeight << ") points"
+                    << " rotation=" << pageRotation << std::endl;
 
           // Check for TrimBox â€” if the PDF has one that's smaller than the
           // MediaBox/CropBox, it defines the intended content area precisely
