@@ -1,4 +1,4 @@
-#include "OCRAnalysis.hpp"
+﻿#include "OCRAnalysis.hpp"
 
 #include <chrono>
 #include <cmath>
@@ -42,6 +42,7 @@
 #include <Stream.h>
 #include <TextOutputDev.h>
 #include <goo/GooString.h>
+#include <tesseract/resultiterator.h>
 
 // Poppler Splash renderer for full-page rasterization
 #include <SplashOutputDev.h>
@@ -212,434 +213,192 @@ OCRResult OCRAnalysis::extractTextFromPDF(const std::string &pdfPath,
   auto startTime = std::chrono::high_resolution_clock::now();
 
   try {
-    // Load the PDF document using Poppler
-    std::unique_ptr<poppler::document> doc(
-        poppler::document::load_from_file(pdfPath));
+    // Use TextOutputDev via displayPage so coordinates are in the same
+    // rendered/rotated space as LineExtractorOutputDev.  This ensures
+    // text bounding boxes share the same PDF bottom-left origin as the
+    // crop-mark and image data later used by renderElementsToPNG.
+    GlobalParamsIniter gpi(nullptr);
+    auto gooFile = std::make_unique<GooString>(pdfPath);
+    std::unique_ptr<PDFDoc> doc(new PDFDoc(std::move(gooFile)));
 
-    if (!doc) {
+    if (!doc || !doc->isOk()) {
       result.errorMessage = "Failed to load PDF file: " + pdfPath;
       return result;
     }
-
-    if (doc->is_locked()) {
-      result.errorMessage = "PDF file is password protected: " + pdfPath;
+    if (doc->getNumPages() < 1) {
+      result.errorMessage = "PDF has no pages";
       return result;
     }
 
-    // Extract text from the first page with position information
+    // Get the display height (after rotation) for y-flip.
+    Page *pg1 = doc->getPage(1);
+    const ::PDFRectangle *mb = pg1->getMediaBox();
+    int pageRotate = pg1->getRotate(); // 0, 90, 180, 270
+    // After applying rotation, the display width/height may swap.
+    double dispW, dispH;
+    if (pageRotate == 90 || pageRotate == 270) {
+      dispW = mb->y2 - mb->y1; // landscape: display width = portrait height
+      dispH = mb->x2 - mb->x1; // landscape: display height = portrait width
+    } else {
+      dispW = mb->x2 - mb->x1;
+      dispH = mb->y2 - mb->y1;
+    }
+    std::cerr << "DEBUG: extractTextFromPDF pageRotate=" << pageRotate
+              << " dispW=" << dispW << " dispH=" << dispH << std::endl;
+
+    // Run TextOutputDev through the same displayPage used by line extraction.
+    TextOutputDev textOut(nullptr, true, 0, false, false);
+    doc->displayPage(&textOut, 1, 72, 72, 0 /*use PDF rotation*/, false, true,
+                     false);
+    TextPage *textPage = textOut.takeText();
+
+    std::vector<TextRegion> pageRegions;
     std::string fullText;
-    int pageCount = doc->pages();
-    std::cerr << "DEBUG: PDF has " << pageCount
-              << " pages, processing first page only" << std::endl;
 
-    // Only process the first page (pageIndex = 0)
-    for (int pageIndex = 0; pageIndex < 1 && pageIndex < pageCount;
-         pageIndex++) {
-      std::cerr << "DEBUG: Processing page " << (pageIndex + 1) << std::endl;
-
-      try {
-        std::unique_ptr<poppler::page> page(doc->create_page(pageIndex));
-
-        if (!page) {
-          std::cerr << "DEBUG: Failed to create page " << (pageIndex + 1)
-                    << ", skipping" << std::endl;
-          continue;
-        }
-
-        // Get page dimensions for coordinate context
-        poppler::rectf pageRect = page->page_rect();
-
-        // Get text list with font information for detailed extraction
-        std::cerr << "DEBUG: Getting text list for page " << (pageIndex + 1)
-                  << std::endl;
-        std::vector<poppler::text_box> textBoxes;
-        try {
-          // Try with font information first
-          std::cerr << "DEBUG: Attempting text extraction with font info..."
-                    << std::endl;
-          textBoxes = page->text_list(); // Use simpler version without font
-                                         // info to avoid crashes
-          std::cerr << "DEBUG: Found " << textBoxes.size()
-                    << " text boxes on page " << (pageIndex + 1) << std::endl;
-        } catch (const std::exception &e) {
-          std::cerr << "DEBUG: Exception getting text list for page "
-                    << (pageIndex + 1) << ": " << e.what() << std::endl;
-          continue;
-        } catch (...) {
-          std::cerr << "DEBUG: Unknown exception getting text list for page "
-                    << (pageIndex + 1) << std::endl;
-          continue;
-        }
-
-        // Temporary storage for word-level regions on this page
-        std::vector<TextRegion> pageRegions;
-        std::string pageText;
-
-        for (auto &textBox : textBoxes) {
-          try {
-            // Get the text content
-            poppler::byte_array textBytes = textBox.text().to_utf8();
-            std::string text(textBytes.begin(), textBytes.end());
-
-            if (text.empty()) {
+    for (const TextFlow *flow = textPage->getFlows(); flow;
+         flow = flow->getNext()) {
+      for (const TextBlock *blk = flow->getBlocks(); blk;
+           blk = blk->getNext()) {
+        for (const TextLine *ln = blk->getLines(); ln; ln = ln->getNext()) {
+          for (const TextWord *word = ln->getWords(); word;
+               word = word->getNext()) {
+            if (word->getLength() == 0)
               continue;
+
+            // Build UTF-8 text for this word
+            std::string text;
+            for (int ci = 0; ci < word->getLength(); ci++) {
+              const Unicode *uns = word->getChar(ci);
+              if (!uns)
+                continue;
+              Unicode u = *uns;
+              if (u < 0x80) {
+                text += static_cast<char>(u);
+              } else if (u < 0x800) {
+                text += static_cast<char>(0xC0 | (u >> 6));
+                text += static_cast<char>(0x80 | (u & 0x3F));
+              } else {
+                text += static_cast<char>(0xE0 | (u >> 12));
+                text += static_cast<char>(0x80 | ((u >> 6) & 0x3F));
+                text += static_cast<char>(0x80 | (u & 0x3F));
+              }
             }
+            if (text.empty())
+              continue;
 
-            // Get bounding box (in PDF coordinates - origin at bottom-left)
-            poppler::rectf bbox = textBox.bbox();
+            // getBBox() returns coordinates in screen-Y-down space:
+            //   xMin/xMax = left/right (same as PDF x)
+            //   yMin = TOP of word  (screen-Y, 0=top of display)
+            //   yMax = BOTTOM of word (screen-Y, larger = lower on page)
+            // Convert to PDF y-up (bottom-left origin, y-up from bottom of
+            // display) using the display height (dispH):
+            //   pdf_y_bottom = dispH - yMax   ← bottom edge (y-up)
+            //   pdf_y_top    = dispH - yMin   ← top edge (y-up)
+            double xMin, yMinScr, xMax, yMaxScr;
+            word->getBBox(&xMin, &yMinScr, &xMax, &yMaxScr);
+            double pdf_y_bottom = dispH - yMaxScr; // PDF y-up bottom edge
+            double pdf_y_top = dispH - yMinScr;    // PDF y-up top edge
+            double width = xMax - xMin;
+            double height = pdf_y_top - pdf_y_bottom;
 
-            // Convert PDF coordinates to image-style coordinates (origin at
-            // top-left) PDF y increases upward, image y increases downward
-            double x = bbox.x();
-            double y = pageRect.height() - bbox.y() - bbox.height();
-            double width = bbox.width();
-            double height = bbox.height();
-
-            // Create TextRegion with position information
             TextRegion region;
             region.text = text;
-            region.boundingBox =
-                cv::Rect(static_cast<int>(x), static_cast<int>(y),
-                         static_cast<int>(width), static_cast<int>(height));
-            // Store high-precision coordinates for accurate calculations
-            region.preciseX = x;
-            region.preciseY = y;
+            // Store bottom-left y-up coordinate (PDF bottom-left origin,
+            // same space as images and line-extraction crop marks).
+            region.boundingBox = cv::Rect(
+                static_cast<int>(xMin), static_cast<int>(pdf_y_bottom),
+                static_cast<int>(width), static_cast<int>(height + 0.5));
+            region.preciseX = xMin;
+            region.preciseY = pdf_y_bottom; // PDF bottom-left y (bottom edge)
             region.preciseWidth = width;
             region.preciseHeight = height;
+            region.fontSize = height; // approximation
 
-            // Extract font information
-            // Note: Poppler's get_font_name() and get_font_size() may not be
-            // available or may return invalid values in some versions
-            try {
-              std::string fontName = textBox.get_font_name();
-              if (fontName != "*ignored*" && !fontName.empty()) {
-                region.fontName = fontName;
-
-                // Detect bold and italic from font name
-                std::string fontNameLower = fontName;
-                std::transform(fontNameLower.begin(), fontNameLower.end(),
-                               fontNameLower.begin(), ::tolower);
-
-                region.isBold =
-                    (fontNameLower.find("bold") != std::string::npos);
-                region.isItalic =
-                    (fontNameLower.find("italic") != std::string::npos ||
-                     fontNameLower.find("oblique") != std::string::npos);
+            // Font info
+            const TextFontInfo *fi = word->getFontInfo(0);
+            if (fi) {
+              const GooString *fn = fi->getFontName();
+              if (fn) {
+                region.fontName = fn->toStr();
+                auto plusPos = region.fontName.find('+');
+                if (plusPos != std::string::npos)
+                  region.fontName = region.fontName.substr(plusPos + 1);
               }
-            } catch (...) {
-              // Font name extraction failed, use defaults
-              region.fontName = "Sans";
-              region.isBold = false;
-              region.isItalic = false;
+              region.isBold = fi->isBold();
+              region.isItalic = fi->isItalic();
             }
 
-            // Use bounding box height as font size approximation
-            // This is more reliable than get_font_size() which may not be
-            // available
-            region.fontSize = height;
-
-            // Get rotation (in degrees)
-            int rotation = textBox.rotation();
-
-            // Determine orientation using rotation and aspect ratio
-            double aspectRatio = (width > 0) ? (height / width) : 1.0;
-
-            bool isLikelyVerticalByShape = false;
-            if (text.length() > 1) {
-              isLikelyVerticalByShape = (aspectRatio > 1.5);
-            } else {
-              isLikelyVerticalByShape = (aspectRatio > 3.0);
-            }
-
-            // Combine rotation and shape to determine orientation
-            if (rotation == 90 || rotation == 270 || rotation == -90 ||
-                rotation == -270) {
+            // Orientation from TextWord rotation (0=0°,1=90°,2=180°,3=270°)
+            int rot = word->getRotation();
+            if (rot == 1 || rot == 3)
               region.orientation = TextOrientation::Vertical;
-            } else if (isLikelyVerticalByShape) {
-              region.orientation = TextOrientation::Vertical;
-            } else if (rotation == 0 || rotation == 180 || rotation == -180) {
+            else
               region.orientation = TextOrientation::Horizontal;
-            } else {
-              region.orientation = isLikelyVerticalByShape
-                                       ? TextOrientation::Vertical
-                                       : TextOrientation::Horizontal;
-            }
 
-            // Set default confidence (font size not available without font
-            // info)
             region.confidence = 80.0f;
-
-            // Store page number in level field (1-indexed)
-            region.level = pageIndex + 1;
+            region.level = 1; // page 1
 
             pageRegions.push_back(region);
-
-            // Build full text
-            pageText += text;
-            if (textBox.has_space_after()) {
-              pageText += " ";
-            }
-          } catch (const std::exception &e) {
-            std::cerr << "DEBUG: Exception processing text box on page "
-                      << (pageIndex + 1) << ": " << e.what() << std::endl;
-            continue;
-          } catch (...) {
-            std::cerr << "DEBUG: Unknown exception processing text box on page "
-                      << (pageIndex + 1) << std::endl;
-            continue;
+            fullText += text + " ";
           }
         }
-
-        // Post-processing: Reclassify horizontal words that are spatially
-        // aligned with vertical text. This catches short words like "No."
-        // that don't meet the aspect ratio threshold but are clearly part of
-        // a vertical text column.
-        for (size_t i = 0; i < pageRegions.size(); i++) {
-          if (pageRegions[i].orientation != TextOrientation::Horizontal) {
-            continue; // Already vertical or unknown
-          }
-
-          const cv::Rect &hBox = pageRegions[i].boundingBox;
-
-          // First, check if this word is horizontally adjacent to other
-          // horizontal text. If so, it's likely part of a horizontal line and
-          // shouldn't be reclassified.
-          bool hasHorizontalNeighbor = false;
-          for (size_t k = 0; k < pageRegions.size(); k++) {
-            if (i == k ||
-                pageRegions[k].orientation != TextOrientation::Horizontal) {
-              continue;
-            }
-
-            const cv::Rect &otherBox = pageRegions[k].boundingBox;
-
-            // Check if Y positions are similar (same horizontal line)
-            int yCenter1 = hBox.y + hBox.height / 2;
-            int yCenter2 = otherBox.y + otherBox.height / 2;
-            int yDiff = std::abs(yCenter1 - yCenter2);
-            int yTolerance =
-                std::max(5, std::max(hBox.height, otherBox.height) / 2);
-
-            if (yDiff <= yTolerance) {
-              // Check if horizontally adjacent (close in X)
-              int gap;
-              if (hBox.x > otherBox.x + otherBox.width) {
-                gap = hBox.x - (otherBox.x + otherBox.width);
-              } else if (otherBox.x > hBox.x + hBox.width) {
-                gap = otherBox.x - (hBox.x + hBox.width);
-              } else {
-                gap = 0; // overlapping
-              }
-
-              // Consider adjacent if gap is less than average word width
-              int avgWidth = (hBox.width + otherBox.width) / 2;
-              if (gap < avgWidth * 2) {
-                hasHorizontalNeighbor = true;
-                break;
-              }
-            }
-          }
-
-          // If this word has horizontal neighbors, don't reclassify it
-          if (hasHorizontalNeighbor) {
-            continue;
-          }
-
-          // Check if this horizontal word aligns with any vertical word
-          for (size_t j = 0; j < pageRegions.size(); j++) {
-            if (i == j ||
-                pageRegions[j].orientation != TextOrientation::Vertical) {
-              continue;
-            }
-
-            const cv::Rect &vBox = pageRegions[j].boundingBox;
-
-            // Check X alignment: centers should be close
-            int hCenterX = hBox.x + hBox.width / 2;
-            int vCenterX = vBox.x + vBox.width / 2;
-            int xDiff = std::abs(hCenterX - vCenterX);
-
-            // Check vertical proximity: should be adjacent or overlapping
-            int verticalGap;
-            if (hBox.y > vBox.y + vBox.height) {
-              // horizontal box is below vertical box
-              verticalGap = hBox.y - (vBox.y + vBox.height);
-            } else if (vBox.y > hBox.y + hBox.height) {
-              // vertical box is below horizontal box
-              verticalGap = vBox.y - (hBox.y + hBox.height);
-            } else {
-              // overlapping
-              verticalGap = 0;
-            }
-
-            // If X positions are very close and vertically adjacent,
-            // reclassify
-            int xTolerance = std::max(5, std::max(hBox.width, vBox.width) / 2);
-            int verticalTolerance = std::max(10, vBox.height);
-
-            if (xDiff <= xTolerance && verticalGap <= verticalTolerance) {
-              pageRegions[i].orientation = TextOrientation::Vertical;
-              break; // Found a match, no need to check more
-            }
-          }
-        }
-
-        // If line-level extraction is requested, group words into lines
-        if (level == PDFExtractionLevel::Line && !pageRegions.empty()) {
-          std::cerr << "DEBUG: Grouping " << pageRegions.size()
-                    << " text boxes into lines..." << std::endl;
-          std::vector<TextRegion> lineRegions;
-          std::vector<bool> used(pageRegions.size(), false);
-
-          for (size_t i = 0; i < pageRegions.size(); i++) {
-            if (used[i])
-              continue;
-
-            TextRegion lineRegion = pageRegions[i];
-            used[i] = true;
-            int wordsInLine = 1;
-
-            // Determine grouping tolerance based on orientation
-            // For horizontal text, group by similar Y position
-            // For vertical text, group by similar X position
-            bool isVertical =
-                (lineRegion.orientation == TextOrientation::Vertical);
-
-            // Tolerance for considering words on the same line
-            // Use half the height/width as tolerance
-            int tolerance =
-                isVertical ? std::max(5, lineRegion.boundingBox.width / 2)
-                           : std::max(5, lineRegion.boundingBox.height / 2);
-
-            std::cerr << "DEBUG: Starting line " << lineRegions.size()
-                      << " with text: \"" << lineRegion.text
-                      << "\" at Y=" << lineRegion.boundingBox.y
-                      << " height=" << lineRegion.boundingBox.height
-                      << " tolerance=" << tolerance << std::endl;
-
-            // Find all words that belong to this line
-            for (size_t j = i + 1; j < pageRegions.size(); j++) {
-              if (used[j])
-                continue;
-
-              const TextRegion &candidate = pageRegions[j];
-
-              // Must have same orientation
-              if (candidate.orientation != lineRegion.orientation)
-                continue;
-
-              bool onSameLine = false;
-              if (isVertical) {
-                // For vertical text, check if X positions are close
-                int xDiff = std::abs(candidate.boundingBox.x -
-                                     lineRegion.boundingBox.x);
-                // Also check they're vertically adjacent
-                int verticalGap =
-                    std::min(std::abs(candidate.boundingBox.y -
-                                      (lineRegion.boundingBox.y +
-                                       lineRegion.boundingBox.height)),
-                             std::abs(lineRegion.boundingBox.y -
-                                      (candidate.boundingBox.y +
-                                       candidate.boundingBox.height)));
-                onSameLine = (xDiff <= tolerance &&
-                              verticalGap < lineRegion.boundingBox.height * 2);
-              } else {
-                // For horizontal text, check if Y positions are close
-                int yCenter1 = lineRegion.boundingBox.y +
-                               lineRegion.boundingBox.height / 2;
-                int yCenter2 =
-                    candidate.boundingBox.y + candidate.boundingBox.height / 2;
-                int yDiff = std::abs(yCenter1 - yCenter2);
-                // Also check they're horizontally close (not too far apart)
-                int horizontalGap =
-                    std::min(std::abs(candidate.boundingBox.x -
-                                      (lineRegion.boundingBox.x +
-                                       lineRegion.boundingBox.width)),
-                             std::abs(lineRegion.boundingBox.x -
-                                      (candidate.boundingBox.x +
-                                       candidate.boundingBox.width)));
-                onSameLine = (yDiff <= tolerance &&
-                              horizontalGap < lineRegion.boundingBox.width * 3);
-
-                if (yDiff <= tolerance) {
-                  std::cerr << "DEBUG:   Candidate \"" << candidate.text
-                            << "\" at Y=" << candidate.boundingBox.y
-                            << " yCenter=" << yCenter2 << " yDiff=" << yDiff
-                            << " hGap=" << horizontalGap
-                            << " maxGap=" << (lineRegion.boundingBox.width * 3)
-                            << " -> " << (onSameLine ? "GROUPED" : "SKIPPED")
-                            << std::endl;
-                }
-              }
-
-              if (onSameLine) {
-                // Merge this word into the line
-                used[j] = true;
-                wordsInLine++;
-
-                // Expand bounding box to include this word
-                int newX =
-                    std::min(lineRegion.boundingBox.x, candidate.boundingBox.x);
-                int newY =
-                    std::min(lineRegion.boundingBox.y, candidate.boundingBox.y);
-                int newRight = std::max(
-                    lineRegion.boundingBox.x + lineRegion.boundingBox.width,
-                    candidate.boundingBox.x + candidate.boundingBox.width);
-                int newBottom = std::max(
-                    lineRegion.boundingBox.y + lineRegion.boundingBox.height,
-                    candidate.boundingBox.y + candidate.boundingBox.height);
-
-                lineRegion.boundingBox =
-                    cv::Rect(newX, newY, newRight - newX, newBottom - newY);
-
-                // Append text with space
-                lineRegion.text += " " + candidate.text;
-
-                // Keep higher confidence
-                lineRegion.confidence =
-                    std::max(lineRegion.confidence, candidate.confidence);
-              }
-            }
-
-            std::cerr << "DEBUG: Completed line " << lineRegions.size()
-                      << " with " << wordsInLine << " words: \""
-                      << lineRegion.text << "\"" << std::endl;
-            lineRegions.push_back(lineRegion);
-          }
-
-          std::cerr << "DEBUG: Grouped into " << lineRegions.size()
-                    << " lines total" << std::endl;
-
-          // Add line regions to result
-          for (auto &region : lineRegions) {
-            result.regions.push_back(region);
-          }
-        } else {
-          // Word-level extraction - add all word regions
-          for (auto &region : pageRegions) {
-            result.regions.push_back(region);
-          }
-        }
-
-        // Add page text to full document text
-        if (!pageText.empty()) {
-          fullText += pageText;
-        }
-      } catch (const std::exception &e) {
-        std::cerr << "DEBUG: Exception processing page " << (pageIndex + 1)
-                  << ": " << e.what() << std::endl;
-        // Continue to next page
-      } catch (...) {
-        std::cerr << "DEBUG: Unknown exception processing page "
-                  << (pageIndex + 1) << std::endl;
-        // Continue to next page
       }
     }
+    textPage->decRefCnt();
 
+    // Group words into text lines if requested.
+    if (level == PDFExtractionLevel::Word || pageRegions.empty()) {
+      result.regions = std::move(pageRegions);
+    } else {
+      // Simple greedy line grouping by Y proximity (bottom-left coords).
+      std::vector<TextRegion> lineRegions;
+      std::vector<bool> used(pageRegions.size(), false);
+      for (size_t i = 0; i < pageRegions.size(); i++) {
+        if (used[i])
+          continue;
+        TextRegion line = pageRegions[i];
+        used[i] = true;
+        bool isVert = (line.orientation == TextOrientation::Vertical);
+        int tol = isVert ? std::max(5, line.boundingBox.width / 2)
+                         : std::max(5, line.boundingBox.height / 2);
+        for (size_t j = i + 1; j < pageRegions.size(); j++) {
+          if (used[j])
+            continue;
+          if (pageRegions[j].orientation != line.orientation)
+            continue;
+          const TextRegion &cand = pageRegions[j];
+          bool same;
+          if (isVert) {
+            same = std::abs(cand.boundingBox.x - line.boundingBox.x) <= tol;
+          } else {
+            int yc1 = line.boundingBox.y + line.boundingBox.height / 2;
+            int yc2 = cand.boundingBox.y + cand.boundingBox.height / 2;
+            same = std::abs(yc1 - yc2) <= tol;
+          }
+          if (same) {
+            used[j] = true;
+            line.text += " " + cand.text;
+            line.boundingBox = line.boundingBox | cand.boundingBox;
+            line.preciseX = std::min(line.preciseX, cand.preciseX);
+            line.preciseY = std::min(line.preciseY, cand.preciseY);
+            double r1 = line.preciseX + line.preciseWidth;
+            double r2 = cand.preciseX + cand.preciseWidth;
+            double t1 = line.preciseY + line.preciseHeight;
+            double t2 = cand.preciseY + cand.preciseHeight;
+            line.preciseWidth = std::max(r1, r2) - line.preciseX;
+            line.preciseHeight = std::max(t1, t2) - line.preciseY;
+          }
+        }
+        lineRegions.push_back(std::move(line));
+      }
+      result.regions = std::move(lineRegions);
+    }
     result.fullText = fullText;
     result.success = true;
+
   } catch (const std::exception &e) {
-    result.errorMessage = std::string("PDF extraction failed: ") + e.what();
+    result.errorMessage =
+        std::string("PDF text extraction failed: ") + e.what();
   }
 
   auto endTime = std::chrono::high_resolution_clock::now();
@@ -810,7 +569,7 @@ public:
       return;
     }
 
-    // Get the current fill colour — this is used for opaque mask pixels
+    // Get the current fill colour â€” this is used for opaque mask pixels
     GfxRGB fillRgb;
     state->getFillRGB(&fillRgb);
     unsigned char fgR = colToByte(fillRgb.r);
@@ -822,7 +581,7 @@ public:
     ImageStream imgStr(str, width, 1, 1);
     imgStr.reset();
 
-    // Composite over white: opaque mask pixels → fill colour, rest → white
+    // Composite over white: opaque mask pixels â†’ fill colour, rest â†’ white
     cv::Mat mat(height, width, CV_8UC3);
     for (int row = 0; row < height; row++) {
       unsigned char *line = imgStr.getLine();
@@ -1757,8 +1516,31 @@ OCRAnalysis::PDFElements
 OCRAnalysis::extractPDFElements(const std::string &pdfPath, double minRectSize,
                                 double minLineLength,
                                 const std::string &imageOutputDir) {
+  // NOTE: This function processes ONLY the first page of the PDF.
+  // All sub-functions (text, images, rectangles, lines) are hardcoded to
+  // page 1.  Multi-page PDFs are accepted but only page 1 is ever read.
+
   PDFElements result;
   result.success = false;
+
+  // Verify the PDF is loadable and has at least one page before doing any work.
+  {
+    std::unique_ptr<poppler::document> checkDoc(
+        poppler::document::load_from_file(pdfPath));
+    if (!checkDoc) {
+      result.errorMessage = "Failed to open PDF: " + pdfPath;
+      return result;
+    }
+    int totalPages = checkDoc->pages();
+    if (totalPages < 1) {
+      result.errorMessage = "PDF has no pages: " + pdfPath;
+      return result;
+    }
+    if (totalPages > 1) {
+      std::cerr << "DEBUG: PDF has " << totalPages
+                << " pages â€” only page 1 will be processed." << std::endl;
+    }
+  }
 
   auto startTime = std::chrono::high_resolution_clock::now();
 
@@ -1782,6 +1564,136 @@ OCRAnalysis::extractPDFElements(const std::string &pdfPath, double minRectSize,
     } catch (const std::exception &e) {
       std::cerr << "DEBUG: Text extraction threw exception: " << e.what()
                 << std::endl;
+    }
+
+    // Enrich font names using Poppler's internal TextOutputDev, which provides
+    // the actual embedded font name and accurate isBold/isItalic flags from
+    // font descriptor bits.  The C++ text_list() API returns "*ignored*" for
+    // most PDFs, so this is the only reliable source of font identity.
+    if (!result.textLines.empty()) {
+      try {
+        GlobalParamsIniter gpi(nullptr);
+        auto gooFile = std::make_unique<GooString>(pdfPath);
+        std::unique_ptr<PDFDoc> fontDoc(new PDFDoc(std::move(gooFile)));
+        if (fontDoc->isOk() && fontDoc->getNumPages() >= 1) {
+          // Get page height so we can convert TextWord PDF y-up coords to
+          // the screen y-down coords used by preciseX/Y.
+          Page *pg1 = fontDoc->getPage(1);
+          const ::PDFRectangle *mb = pg1->getMediaBox();
+          // Get display height (after rotation) for y-flip.
+          // For Rotate=90/270, page displays with width/height swapped.
+          int pageRotate = pg1->getRotate();
+          double dispH_font;
+          if (pageRotate == 90 || pageRotate == 270)
+            dispH_font = mb->x2 - mb->x1; // landscape: dispH = portrait width
+          else
+            dispH_font = mb->y2 - mb->y1;
+
+          TextOutputDev textOut(nullptr, true, 0, false, false);
+          fontDoc->displayPage(&textOut, 1, 72, 72, 0, false, true, false);
+          TextPage *textPage = textOut.takeText();
+
+          // Collect per-word font entries.
+          // TextWord getBBox() returns PDF y-up coords (yMin=bottom, yMax=top).
+          // text regions are stored in PDF bottom-left coords (y = bottom
+          // edge).
+          struct WordFontEntry {
+            std::string fontName;
+            bool isBold = false, isItalic = false;
+            double xMin = 0, yBottom = 0, xMax = 0, yTop = 0;
+          };
+          std::vector<WordFontEntry> wordFonts;
+
+          for (const TextFlow *flow = textPage->getFlows(); flow;
+               flow = flow->getNext()) {
+            for (const TextBlock *blk = flow->getBlocks(); blk;
+                 blk = blk->getNext()) {
+              for (const TextLine *ln = blk->getLines(); ln;
+                   ln = ln->getNext()) {
+                for (const TextWord *word = ln->getWords(); word;
+                     word = word->getNext()) {
+                  if (word->getLength() == 0)
+                    continue;
+                  const TextFontInfo *fi = word->getFontInfo(0);
+                  if (!fi)
+                    continue;
+                  WordFontEntry e;
+                  const GooString *fn = fi->getFontName();
+                  if (fn) {
+                    e.fontName = fn->toStr();
+                    auto plusPos = e.fontName.find('+');
+                    if (plusPos != std::string::npos)
+                      e.fontName = e.fontName.substr(plusPos + 1);
+                  }
+                  e.isBold = fi->isBold();
+                  e.isItalic = fi->isItalic();
+                  // getBBox returns screen-Y-down coords; convert to PDF y-up
+                  double gxMin, gyMinScr, gxMax, gyMaxScr;
+                  word->getBBox(&gxMin, &gyMinScr, &gxMax, &gyMaxScr);
+                  e.xMin = gxMin;
+                  e.xMax = gxMax;
+                  e.yBottom = dispH_font - gyMaxScr; // PDF y-up bottom
+                  e.yTop = dispH_font - gyMinScr;    // PDF y-up top
+                  wordFonts.push_back(e);
+                }
+              }
+            }
+          }
+          textPage->decRefCnt();
+
+          // Match each text region to the word with the greatest bbox overlap.
+          // tr.preciseX/preciseY are now in PDF bottom-left coords (y =
+          // bottom).
+          for (auto &tr : result.textLines) {
+            double trL = tr.preciseX;
+            double trB = tr.preciseY; // bottom edge (y-up)
+            double trR = trL + tr.preciseWidth;
+            double trT = trB + tr.preciseHeight; // top edge (y-up)
+            double bestOverlap = 0.0;
+            const WordFontEntry *best = nullptr;
+            for (const auto &wf : wordFonts) {
+              double ol = std::max(trL, wf.xMin);
+              double ob = std::max(trB, wf.yBottom);
+              double orx = std::min(trR, wf.xMax);
+              double ot = std::min(trT, wf.yTop);
+              if (orx > ol && ot > ob) {
+                double overlap = (orx - ol) * (ot - ob);
+                if (overlap > bestOverlap) {
+                  bestOverlap = overlap;
+                  best = &wf;
+                }
+              }
+            }
+            if (best && !best->fontName.empty()) {
+              tr.fontName = best->fontName;
+              tr.isBold = best->isBold;
+              tr.isItalic = best->isItalic;
+            }
+          }
+        }
+      } catch (const std::exception &e) {
+        std::cerr << "DEBUG: Font enrichment failed: " << e.what() << std::endl;
+      }
+    }
+
+    // Move symbol-font text lines (Wingdings family) to ignoredTextLines so
+    // they are excluded from rendering but remain available for diagnostics.
+    {
+      auto isWingdings = [](const std::string &name) {
+        std::string lower = name;
+        std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+        return lower.find("wingdings") != std::string::npos;
+      };
+      std::vector<TextRegion> kept, ignored;
+      for (auto &tr : result.textLines) {
+        if (isWingdings(tr.fontName))
+          ignored.push_back(std::move(tr));
+        else
+          kept.push_back(std::move(tr));
+      }
+      result.ignoredTextLines = std::move(ignored);
+      result.textLines = std::move(kept);
+      result.textLineCount = static_cast<int>(result.textLines.size());
     }
 
     // Extract embedded images from first page
@@ -2287,7 +2199,7 @@ OCRAnalysis::extractPDFElements(const std::string &pdfPath, double minRectSize,
         // (only if we don't already have a linesBoundingBox from TrimBox)
         if (result.linesBoundingBoxWidth > 0 &&
             result.linesBoundingBoxHeight > 0) {
-          std::cerr << "DEBUG: Skipping crop mark detection — using TrimBox"
+          std::cerr << "DEBUG: Skipping crop mark detection â€” using TrimBox"
                     << std::endl;
         } else {
 
@@ -2321,7 +2233,7 @@ OCRAnalysis::extractPDFElements(const std::string &pdfPath, double minRectSize,
           //   2. Determine the Y-band(s) of those rows.
           //   3. Remove ALL horizontal lines in those Y groups.
           //   4. Remove ALL vertical lines whose endpoints fall within
-          //      a bleed-mark Y-band — these are the box edges.
+          //      a bleed-mark Y-band â€” these are the box edges.
           {
             const double gridTolerance = 3.0;
 
@@ -2355,7 +2267,7 @@ OCRAnalysis::extractPDFElements(const std::string &pdfPath, double minRectSize,
 
             for (const auto &[y, indices] : hLinesByY) {
               if (static_cast<int>(indices.size()) > maxGroupSize) {
-                // This Y coordinate has many horizontal lines — it's a
+                // This Y coordinate has many horizontal lines â€” it's a
                 // bleed-mark row.  However, crop mark lines may also
                 // exist at this same Y (at the extreme left/right edge
                 // of the content area).  To distinguish:
@@ -2390,7 +2302,7 @@ OCRAnalysis::extractPDFElements(const std::string &pdfPath, double minRectSize,
                   bool isAtRightEdge = lineMaxX > rightEdge;
 
                   if (!isAtLeftEdge && !isAtRightEdge) {
-                    // Interior line — bleed mark, remove it
+                    // Interior line â€” bleed mark, remove it
                     hLinesToRemove.insert(idx);
                   }
                 }
@@ -2647,6 +2559,9 @@ OCRAnalysis::extractPDFElements(const std::string &pdfPath, double minRectSize,
               std::cerr << "DEBUG: Crop box from crop marks: (" << minX << ", "
                         << minY << ") to (" << maxX << ", " << maxY << ")"
                         << std::endl;
+              std::cerr << "DEBUG: Bounding rectangle size (crop marks): "
+                        << result.linesBoundingBoxWidth << " x "
+                        << result.linesBoundingBoxHeight << " pt" << std::endl;
             } else {
               // Fallback to original bounding box
               result.linesBoundingBoxX = lineResult.boundingBoxX;
@@ -2657,9 +2572,13 @@ OCRAnalysis::extractPDFElements(const std::string &pdfPath, double minRectSize,
               std::cerr << "DEBUG: Not enough crop marks found ("
                         << cropMarkCorners.size()
                         << "), using line bounding box" << std::endl;
+              std::cerr
+                  << "DEBUG: Bounding rectangle size (largest rect/lines): "
+                  << result.linesBoundingBoxWidth << " x "
+                  << result.linesBoundingBoxHeight << " pt" << std::endl;
             }
           }
-        } // end else (no TrimBox — use crop mark detection)
+        } // end else (no TrimBox â€” use crop mark detection)
       }
     } catch (const std::exception &e) {
       std::cerr << "DEBUG: Line extraction threw exception: " << e.what()
@@ -2690,7 +2609,7 @@ OCRAnalysis::extractPDFElements(const std::string &pdfPath, double minRectSize,
                     << pageRect.y() << ") size(" << result.pageWidth << " x "
                     << result.pageHeight << ") points" << std::endl;
 
-          // Check for TrimBox — if the PDF has one that's smaller than the
+          // Check for TrimBox â€” if the PDF has one that's smaller than the
           // MediaBox/CropBox, it defines the intended content area precisely
           // and we can skip unreliable geometric crop-mark detection.
           poppler::rectf trimRect = page->page_rect(poppler::trim_box);
@@ -2708,7 +2627,7 @@ OCRAnalysis::extractPDFElements(const std::string &pdfPath, double minRectSize,
             std::cerr << "DEBUG: TrimBox found: origin(" << trimRect.x() << ", "
                       << trimRect.y() << ") size(" << trimRect.width() << " x "
                       << trimRect.height() << ") points" << std::endl;
-            // TrimBox is logged but NOT used as content area —
+            // TrimBox is logged but NOT used as content area â€”
             // crop mark detection is more reliable for these PDFs.
           } else {
             std::cerr << "DEBUG: No meaningful TrimBox found, will use crop "
@@ -2725,6 +2644,405 @@ OCRAnalysis::extractPDFElements(const std::string &pdfPath, double minRectSize,
 
     // Note: pageCount reflects total pages in PDF, but only first page was
     // processed
+
+    // Detect vector graphic regions (logos, illustrations, etc.) that are not
+    // captured by extractEmbeddedImagesFromPDF, which only finds raster images.
+    // We rasterize the page at low DPI, mask out areas covered by known
+    // text/rectangle/line elements, and treat remaining non-white blobs of
+    // significant size as vector-drawn image regions.
+    if (result.pageWidth > 0 && result.pageHeight > 0) {
+      std::cerr << "DEBUG: Scanning for vector graphic regions..." << std::endl;
+      try {
+        std::unique_ptr<poppler::document> vgDoc(
+            poppler::document::load_from_file(pdfPath));
+        if (vgDoc && vgDoc->pages() > 0) {
+          std::unique_ptr<poppler::page> vgPage(vgDoc->create_page(0));
+          if (vgPage) {
+            const double vgDpi = 96.0;
+            const double vgScale = vgDpi / 72.0;
+
+            poppler::page_renderer vgRenderer;
+            vgRenderer.set_render_hint(poppler::page_renderer::antialiasing,
+                                       true);
+            vgRenderer.set_image_format(poppler::image::format_argb32);
+            poppler::image vgPopplerImg =
+                vgRenderer.render_page(vgPage.get(), vgDpi, vgDpi);
+
+            if (vgPopplerImg.is_valid()) {
+              int vgW = vgPopplerImg.width();
+              int vgH = vgPopplerImg.height();
+
+              cv::Mat vgMat(vgH, vgW, CV_8UC4,
+                            const_cast<char *>(vgPopplerImg.const_data()),
+                            vgPopplerImg.bytes_per_row());
+              cv::Mat vgBGR;
+              cv::cvtColor(vgMat, vgBGR, cv::COLOR_BGRA2BGR);
+
+              // Threshold to find non-white pixels
+              cv::Mat vgGray, vgNonWhite;
+              cv::cvtColor(vgBGR, vgGray, cv::COLOR_BGR2GRAY);
+              cv::threshold(vgGray, vgNonWhite, 240, 255,
+                            cv::THRESH_BINARY_INV);
+
+              // Build a coverage mask for all known elements so we can
+              // subtract them and find uncovered graphical content.
+              cv::Mat vgCoverage(vgH, vgW, CV_8UC1, cv::Scalar(0));
+              const int vgPad = 3; // extra pixel padding around each element
+
+              // Helper: mark a rectangle in top-left pixel coordinates
+              auto markRectTL = [&](double tlX, double tlY, double w,
+                                    double h) {
+                int px = static_cast<int>(tlX * vgScale);
+                int py = static_cast<int>(tlY * vgScale);
+                int pw = static_cast<int>(w * vgScale) + 1;
+                int ph = static_cast<int>(h * vgScale) + 1;
+                px = std::max(0, px - vgPad);
+                py = std::max(0, py - vgPad);
+                pw = std::min(vgW - px, pw + 2 * vgPad);
+                ph = std::min(vgH - py, ph + 2 * vgPad);
+                if (pw > 0 && ph > 0)
+                  cv::rectangle(vgCoverage, cv::Rect(px, py, pw, ph), 255,
+                                cv::FILLED);
+              };
+
+              // Text regions are already in top-left coords
+              for (const auto &t : result.textLines)
+                markRectTL(t.boundingBox.x, t.boundingBox.y,
+                           t.boundingBox.width, t.boundingBox.height);
+
+              // Rectangles and lines use bottom-left PDF coords â€” convert
+              for (const auto &r : result.rectangles)
+                markRectTL(r.x, result.pageHeight - r.y - r.height, r.width,
+                           r.height);
+
+              for (const auto &ln : result.graphicLines) {
+                int lx1 = static_cast<int>(ln.x1 * vgScale);
+                int ly1 =
+                    static_cast<int>((result.pageHeight - ln.y1) * vgScale);
+                int lx2 = static_cast<int>(ln.x2 * vgScale);
+                int ly2 =
+                    static_cast<int>((result.pageHeight - ln.y2) * vgScale);
+                int lw = std::max(vgPad * 2,
+                                  static_cast<int>(ln.lineWidth * vgScale + 2));
+                cv::line(vgCoverage, cv::Point(lx1, ly1), cv::Point(lx2, ly2),
+                         255, lw);
+              }
+
+              // Existing embedded images (bottom-left â†’ top-left)
+              for (const auto &im : result.images)
+                markRectTL(im.x, result.pageHeight - im.y - im.displayHeight,
+                           im.displayWidth, im.displayHeight);
+
+              // Find uncovered non-white content
+              cv::Mat vgUnmasked;
+              cv::bitwise_and(vgNonWhite, ~vgCoverage, vgUnmasked);
+
+              // Close small holes to merge nearby pixels into blobs
+              auto morphK =
+                  cv::getStructuringElement(cv::MORPH_RECT, cv::Size(5, 5));
+              cv::morphologyEx(vgUnmasked, vgUnmasked, cv::MORPH_CLOSE, morphK);
+
+              // Content area limits in pixel space (top-left origin).
+              // linesBoundingBox stores bottom-left PDF coords.
+              int cntLeft = 0, cntTop = 0, cntRight = vgW, cntBottom = vgH;
+              if (result.linesBoundingBoxWidth > 0 &&
+                  result.linesBoundingBoxHeight > 0) {
+                cntLeft = static_cast<int>(result.linesBoundingBoxX * vgScale);
+                cntRight = static_cast<int>(
+                    (result.linesBoundingBoxX + result.linesBoundingBoxWidth) *
+                    vgScale);
+                cntTop = static_cast<int>((result.pageHeight -
+                                           result.linesBoundingBoxY -
+                                           result.linesBoundingBoxHeight) *
+                                          vgScale);
+                cntBottom = static_cast<int>(
+                    (result.pageHeight - result.linesBoundingBoxY) * vgScale);
+              }
+
+              // Find connected components in the uncovered mask
+              cv::Mat vgLabels, vgStats, vgCentroids;
+              int numCC = cv::connectedComponentsWithStats(
+                  vgUnmasked, vgLabels, vgStats, vgCentroids);
+
+              // Minimum size threshold: 40 PDF points in each dimension
+              const double minPtSize = 40.0;
+              const int minPxSize = static_cast<int>(minPtSize * vgScale);
+
+              std::filesystem::path pdfFP(pdfPath);
+              std::string pdfStemVG = pdfFP.stem().string();
+              int vecIdx = static_cast<int>(result.images.size());
+
+              for (int ci = 1; ci < numCC; ci++) {
+                int bx = vgStats.at<int>(ci, cv::CC_STAT_LEFT);
+                int by = vgStats.at<int>(ci, cv::CC_STAT_TOP);
+                int bw = vgStats.at<int>(ci, cv::CC_STAT_WIDTH);
+                int bh = vgStats.at<int>(ci, cv::CC_STAT_HEIGHT);
+
+                if (bw < minPxSize || bh < minPxSize)
+                  continue;
+
+                // Require the region to overlap with the content area
+                if (bx + bw <= cntLeft || bx >= cntRight || by + bh <= cntTop ||
+                    by >= cntBottom)
+                  continue;
+
+                // Clip the bounding box to the content area
+                int cx = std::max(bx, cntLeft);
+                int cy = std::max(by, cntTop);
+                int cx2 = std::min(bx + bw, cntRight);
+                int cy2 = std::min(by + bh, cntBottom);
+                int cw = cx2 - cx;
+                int ch = cy2 - cy;
+                if (cw <= 0 || ch <= 0)
+                  continue;
+
+                // Convert pixel region to PDF bottom-left coordinates
+                double pdfX = cx / vgScale;
+                double pdfY = result.pageHeight - cy2 / vgScale;
+                double pdfW = cw / vgScale;
+                double pdfH = ch / vgScale;
+
+                PDFEmbeddedImage vgEmbImg;
+                int safeCX = std::max(0, cx);
+                int safeCY = std::max(0, cy);
+                int safeCW = std::min(vgW - safeCX, cw);
+                int safeCH = std::min(vgH - safeCY, ch);
+                if (safeCW > 0 && safeCH > 0)
+                  vgEmbImg.image =
+                      vgBGR(cv::Rect(safeCX, safeCY, safeCW, safeCH)).clone();
+                vgEmbImg.pageNumber = 1;
+                vgEmbImg.imageIndex = vecIdx;
+                vgEmbImg.width = safeCW;
+                vgEmbImg.height = safeCH;
+                vgEmbImg.x = pdfX;
+                vgEmbImg.y = pdfY;
+                vgEmbImg.displayWidth = pdfW;
+                vgEmbImg.displayHeight = pdfH;
+                vgEmbImg.rotationAngle = 0.0;
+                vgEmbImg.type = "vector_graphic";
+
+                std::cerr << "DEBUG: Vector graphic at PDF (" << pdfX << ", "
+                          << pdfY << ") size " << pdfW << "x" << pdfH
+                          << " pts, " << safeCW << "x" << safeCH << " px"
+                          << std::endl;
+
+                // Save to output directory if one was specified
+                if (!imageOutputDir.empty() && !vgEmbImg.image.empty()) {
+                  std::filesystem::path outDir(imageOutputDir);
+                  std::string fn =
+                      (outDir / (pdfStemVG + "_vecgfx_" +
+                                 std::to_string(vecIdx + 1) + ".png"))
+                          .string();
+                  if (cv::imwrite(fn, vgEmbImg.image))
+                    std::cerr << "DEBUG: Saved vector graphic " << (vecIdx + 1)
+                              << " to: " << fn << std::endl;
+                }
+
+                result.images.push_back(std::move(vgEmbImg));
+                vecIdx++;
+              }
+
+              result.imageCount = static_cast<int>(result.images.size());
+              std::cerr << "DEBUG: Total images after vector graphic scan: "
+                        << result.imageCount << std::endl;
+            }
+          }
+        }
+      } catch (const std::exception &e) {
+        std::cerr << "DEBUG: Vector graphic detection error: " << e.what()
+                  << std::endl;
+      }
+    }
+
+    // --- OCR on embedded images for "L1" PDFs ----------------------------
+    // When the PDF file name begins with "L1" (case-insensitive), run
+    // Tesseract OCR on every embedded image.  Words whose per-word Tesseract
+    // confidence exceeds 85 % are added to result.textLines as TextRegion
+    // entries (top-left PDF-point coordinates, matching native Poppler text).
+    {
+      std::filesystem::path ocrPdfPath(pdfPath);
+      std::string ocrStem = ocrPdfPath.stem().string();
+      bool doImageOCR =
+          ocrStem.size() >= 2 &&
+          std::toupper(static_cast<unsigned char>(ocrStem[0])) == 'L' &&
+          ocrStem[1] == '1';
+
+      if (doImageOCR && !result.images.empty()) {
+        std::cerr << "DEBUG: Running OCR on " << result.images.size()
+                  << " image(s) (L1 PDF rule)" << std::endl;
+
+        // Initialise a single Tesseract instance for all images.
+        tesseract::TessBaseAPI *tess = new tesseract::TessBaseAPI();
+        bool tessOk = (tess->Init("C:/tessdata/tessdata", "eng") == 0 ||
+                       tess->Init(NULL, "eng") == 0);
+        if (!tessOk) {
+          std::cerr << "DEBUG: Could not initialise Tesseract for image OCR"
+                    << std::endl;
+        } else {
+          tess->SetPageSegMode(tesseract::PSM_AUTO);
+
+          const float kConfThreshold = 85.0f;
+
+          for (const auto &img : result.images) {
+            if (img.image.empty())
+              continue;
+
+            // Convert to grayscale for Tesseract.
+            cv::Mat gray;
+            if (img.image.channels() == 1)
+              gray = img.image;
+            else
+              cv::cvtColor(img.image, gray, cv::COLOR_BGR2GRAY);
+
+            // Scale factors: image pixels â†’ PDF points.
+            double scaleX =
+                (img.width > 0) ? img.displayWidth / img.width : 1.0;
+            double scaleY =
+                (img.height > 0) ? img.displayHeight / img.height : 1.0;
+
+            // Top-left corner of the image in PDF top-leftâ€“origin coords.
+            double imgTopLeftPtX = img.x;
+            double imgTopLeftPtY =
+                result.pageHeight - img.y - img.displayHeight;
+
+            tess->SetImage(gray.data, gray.cols, gray.rows, 1,
+                           static_cast<int>(gray.step));
+            tess->Recognize(0);
+
+            // Iterate over words.
+            tesseract::ResultIterator *ri = tess->GetIterator();
+            if (ri == nullptr)
+              continue;
+
+            // Collect high-confidence words.
+            struct OcrWordPt {
+              std::string text;
+              float conf;
+              // Top-left origin, PDF points:
+              double x, y, w, h;
+            };
+            std::vector<OcrWordPt> goodWords;
+
+            do {
+              const char *wordRaw = ri->GetUTF8Text(tesseract::RIL_WORD);
+              float conf = ri->Confidence(tesseract::RIL_WORD);
+              // Trim and skip whitespace-only results
+              std::string wordStr = wordRaw ? wordRaw : "";
+              delete[] wordRaw;
+              auto wsStart = wordStr.find_first_not_of(" \t\r\n\f\v");
+              if (wsStart != std::string::npos)
+                wordStr = wordStr.substr(
+                    wsStart,
+                    wordStr.find_last_not_of(" \t\r\n\f\v") - wsStart + 1);
+              else
+                wordStr.clear();
+              if (!wordStr.empty() && conf >= kConfThreshold) {
+                int wx1, wy1, wx2, wy2;
+                ri->BoundingBox(tesseract::RIL_WORD, &wx1, &wy1, &wx2, &wy2);
+                OcrWordPt wp;
+                wp.text = wordStr;
+                wp.conf = conf;
+                wp.x = imgTopLeftPtX + wx1 * scaleX;
+                wp.y = imgTopLeftPtY + wy1 * scaleY;
+                wp.w = (wx2 - wx1) * scaleX;
+                wp.h = (wy2 - wy1) * scaleY;
+                goodWords.push_back(wp);
+                std::cerr << "DEBUG: OCR word \"" << wp.text
+                          << "\" conf=" << conf << " at PDF (" << wp.x << ","
+                          << wp.y << ") " << wp.w << "x" << wp.h << " pt"
+                          << std::endl;
+              }
+            } while (ri->Next(tesseract::RIL_WORD));
+            delete ri;
+
+            if (goodWords.empty())
+              continue;
+
+            // Group words into text lines: words within half a line-height
+            // of each other (sorted top-to-bottom) belong to the same line.
+            std::sort(goodWords.begin(), goodWords.end(),
+                      [](const OcrWordPt &a, const OcrWordPt &b) {
+                        return a.y < b.y;
+                      });
+
+            std::vector<std::vector<size_t>> lines; // groups of word indices
+            for (size_t wi = 0; wi < goodWords.size(); wi++) {
+              bool placed = false;
+              for (auto &line : lines) {
+                const OcrWordPt &ref = goodWords[line[0]];
+                double tol = ref.h * 0.6;
+                if (std::abs(goodWords[wi].y - ref.y) <= tol) {
+                  line.push_back(wi);
+                  placed = true;
+                  break;
+                }
+              }
+              if (!placed)
+                lines.push_back({wi});
+            }
+
+            // Build one TextRegion per line.
+            for (const auto &line : lines) {
+              if (line.empty())
+                continue;
+
+              // Sort words left-to-right within the line.
+              std::vector<size_t> sorted = line;
+              std::sort(sorted.begin(), sorted.end(), [&](size_t a, size_t b) {
+                return goodWords[a].x < goodWords[b].x;
+              });
+
+              // Compute bounding box and joined text.
+              double lx = goodWords[sorted[0]].x;
+              double ly = goodWords[sorted[0]].y;
+              double lx2 = lx, ly2 = ly;
+              float totalConf = 0.0f;
+              std::string lineText;
+              for (size_t idx : sorted) {
+                const auto &w = goodWords[idx];
+                lx = std::min(lx, w.x);
+                ly = std::min(ly, w.y);
+                lx2 = std::max(lx2, w.x + w.w);
+                ly2 = std::max(ly2, w.y + w.h);
+                totalConf += w.conf;
+                if (!lineText.empty())
+                  lineText += ' ';
+                lineText += w.text;
+              }
+              float avgConf = totalConf / static_cast<float>(sorted.size());
+
+              TextRegion tr;
+              // boundingBox is integer, top-left PDF-point coords.
+              tr.boundingBox =
+                  cv::Rect(static_cast<int>(lx), static_cast<int>(ly),
+                           static_cast<int>(std::ceil(lx2 - lx)),
+                           static_cast<int>(std::ceil(ly2 - ly)));
+              tr.preciseX = lx;
+              tr.preciseY = ly;
+              tr.preciseWidth = lx2 - lx;
+              tr.preciseHeight = ly2 - ly;
+              tr.text = lineText;
+              tr.confidence = avgConf;
+              tr.level = 2; // line level
+              tr.orientation = TextOrientation::Horizontal;
+
+              std::cerr << "DEBUG: OCR line \"" << lineText
+                        << "\" conf=" << avgConf << " bbox=("
+                        << tr.boundingBox.x << "," << tr.boundingBox.y << ","
+                        << tr.boundingBox.width << "x" << tr.boundingBox.height
+                        << ") pt" << std::endl;
+
+              result.textLines.push_back(std::move(tr));
+              result.textLineCount = static_cast<int>(result.textLines.size());
+            }
+          } // for each image
+
+          tess->End();
+        }
+        delete tess;
+      }
+    }
+    // --- end OCR on images -----------------------------------------------
 
     result.success = true;
     std::cerr << "DEBUG: All extractions completed successfully" << std::endl;
@@ -2908,14 +3226,14 @@ std::vector<TextRegion> OCRAnalysis::detectTextRegions(const cv::Mat &image) {
                         &textlineOrder, &deskewAngle);
 
         // Map Tesseract orientation to our TextOrientation enum
-        // PAGE_UP = normal, PAGE_DOWN = upside-down (180°)
-        // PAGE_LEFT/RIGHT = vertical (90° rotated)
+        // PAGE_UP = normal, PAGE_DOWN = upside-down (180Â°)
+        // PAGE_LEFT/RIGHT = vertical (90Â° rotated)
         switch (info.tessOrientation) {
         case tesseract::ORIENTATION_PAGE_UP:
           info.region.orientation = TextOrientation::Horizontal;
           break;
         case tesseract::ORIENTATION_PAGE_DOWN:
-          // Upside-down text - mark as horizontal but will need 180°
+          // Upside-down text - mark as horizontal but will need 180Â°
           // rotation
           info.region.orientation = TextOrientation::Horizontal;
           break;
@@ -3035,10 +3353,10 @@ std::vector<TextRegion> OCRAnalysis::identifyTextRegions(const cv::Mat &image) {
 
   // Try all 4 orientations to find text in any direction
   std::vector<std::pair<int, TextOrientation>> rotations = {
-      {-1, TextOrientation::Horizontal},                    // 0° - normal
-      {cv::ROTATE_90_CLOCKWISE, TextOrientation::Vertical}, // 90° CW
-      {cv::ROTATE_180, TextOrientation::Horizontal}, // 180° - upside down
-      {cv::ROTATE_90_COUNTERCLOCKWISE, TextOrientation::Vertical} // 270°
+      {-1, TextOrientation::Horizontal},                    // 0Â° - normal
+      {cv::ROTATE_90_CLOCKWISE, TextOrientation::Vertical}, // 90Â° CW
+      {cv::ROTATE_180, TextOrientation::Horizontal}, // 180Â° - upside down
+      {cv::ROTATE_90_COUNTERCLOCKWISE, TextOrientation::Vertical} // 270Â°
   };
 
   for (const auto &rotation : rotations) {
@@ -3470,7 +3788,7 @@ int OCRAnalysis::findBestRotation(const cv::Mat &image) {
 
   std::vector<RotationResult> rotationResults;
 
-  // Define rotations to try: no rotation, 90° CW, 180°, 90° CCW
+  // Define rotations to try: no rotation, 90Â° CW, 180Â°, 90Â° CCW
   std::vector<int> rotations = {-1, cv::ROTATE_90_CLOCKWISE, cv::ROTATE_180,
                                 cv::ROTATE_90_COUNTERCLOCKWISE};
 
@@ -3625,7 +3943,7 @@ OCRAnalysis::PNGRenderResult OCRAnalysis::renderElementsToPNG(
 
     } else if (elements.linesBoundingBoxWidth > 0 &&
                elements.linesBoundingBoxHeight > 0) {
-      // Use the interior box calculated from crop marks/lines
+      // Use the bounding box from the lines/crop marks
       minX = elements.linesBoundingBoxX;
       minY = elements.linesBoundingBoxY;
       maxX = elements.linesBoundingBoxX + elements.linesBoundingBoxWidth;
@@ -3642,23 +3960,24 @@ OCRAnalysis::PNGRenderResult OCRAnalysis::renderElementsToPNG(
       maxX = std::numeric_limits<double>::lowest();
       maxY = std::numeric_limits<double>::lowest();
 
-      // Check all elements to find actual bounds (only those within crop box)
       for (const auto &text : elements.textLines) {
-        // Skip elements outside crop box
-        if (text.boundingBox.x < elements.pageX ||
-            text.boundingBox.y < elements.pageY ||
-            text.boundingBox.x + text.boundingBox.width >
-                elements.pageX + elements.pageWidth ||
-            text.boundingBox.y + text.boundingBox.height >
-                elements.pageY + elements.pageHeight) {
+        // Convert text.boundingBox from screen coords (y-down) to PDF coords
+        // (y-up) before accumulating bounds.
+        double tx = text.boundingBox.x;
+        double tw = text.boundingBox.width;
+        double tbottom =
+            elements.pageHeight - text.boundingBox.y - text.boundingBox.height;
+        double ttop = elements.pageHeight - text.boundingBox.y;
+        // Skip elements outside page bounds
+        if (tx < elements.pageX || tbottom < elements.pageY ||
+            tx + tw > elements.pageX + elements.pageWidth ||
+            ttop > elements.pageY + elements.pageHeight) {
           continue;
         }
-        minX = std::min(minX, static_cast<double>(text.boundingBox.x));
-        minY = std::min(minY, static_cast<double>(text.boundingBox.y));
-        maxX = std::max(maxX, static_cast<double>(text.boundingBox.x +
-                                                  text.boundingBox.width));
-        maxY = std::max(maxY, static_cast<double>(text.boundingBox.y +
-                                                  text.boundingBox.height));
+        minX = std::min(minX, tx);
+        minY = std::min(minY, tbottom);
+        maxX = std::max(maxX, tx + tw);
+        maxY = std::max(maxY, ttop);
       }
 
       for (const auto &img : elements.images) {
@@ -3807,7 +4126,7 @@ OCRAnalysis::PNGRenderResult OCRAnalysis::renderElementsToPNG(
     std::vector<TextRegion> ocrTextLines;
     if (elements.hasCropMarks) {
       if (!elements.images.empty()) {
-        std::cerr << "DEBUG: Crop marks detected — skipping OCR on "
+        std::cerr << "DEBUG: Crop marks detected â€” skipping OCR on "
                   << elements.images.size()
                   << " embedded image(s); will render as-is" << std::endl;
       }
@@ -3906,7 +4225,7 @@ OCRAnalysis::PNGRenderResult OCRAnalysis::renderElementsToPNG(
       elem.type = RenderedElement::DATAMATRIX;
       elem.barcodeText = dm.text;
       elem.image = dm.image;
-      // Temporarily store PDF coords — will be converted to relative
+      // Temporarily store PDF coords â€” will be converted to relative
       // after imageWidth/imageHeight are known.
       elem.relativeX = dm.x + dm.width / 2.0;  // centre X in PDF pts
       elem.relativeY = dm.y + dm.height / 2.0; // centre Y in PDF pts
@@ -3933,7 +4252,7 @@ OCRAnalysis::PNGRenderResult OCRAnalysis::renderElementsToPNG(
                            for (const auto &zone : dataMatrixZones) {
                              if (cx >= zone.left && cx <= zone.right &&
                                  cy >= zone.top && cy <= zone.bottom) {
-                               return true; // overlaps — remove
+                               return true; // overlaps â€” remove
                              }
                            }
                            return false;
@@ -3972,7 +4291,7 @@ OCRAnalysis::PNGRenderResult OCRAnalysis::renderElementsToPNG(
       double pdfW = elem.relativeWidth;
       double pdfH = elem.relativeHeight;
 
-      // Convert to rendering coords — these are derived from image
+      // Convert to rendering coords â€” these are derived from image
       // pixel space (top-left origin) so NO Y-flip is needed.
       double renderCX = pdfCX - minX;
       double renderCY = pdfCY - minY; // already top-left origin
@@ -4009,8 +4328,8 @@ OCRAnalysis::PNGRenderResult OCRAnalysis::renderElementsToPNG(
     // ---- Full-page rasterization path for crop-mark PDFs ----------
     // When crop marks are detected, use Poppler's SplashOutputDev to
     // rasterize the entire page at the target DPI, then crop to the
-    // crop box.  This captures EVERYTHING — vector graphics, images,
-    // text — without relying on element-by-element reconstruction.
+    // crop box.  This captures EVERYTHING â€” vector graphics, images,
+    // text â€” without relying on element-by-element reconstruction.
     if (elements.hasCropMarks) {
       std::cerr << "DEBUG: Using SplashOutputDev full-page rasterization "
                    "(crop marks mode)"
@@ -4051,7 +4370,7 @@ OCRAnalysis::PNGRenderResult OCRAnalysis::renderElementsToPNG(
         std::cerr << "DEBUG: Full page raster: " << bmpW << "x" << bmpH
                   << " pixels (row size " << bmpRowSize << ")" << std::endl;
 
-        // Convert SplashBitmap (RGB) → OpenCV Mat (BGR)
+        // Convert SplashBitmap (RGB) â†’ OpenCV Mat (BGR)
         cv::Mat fullPage(bmpH, bmpW, CV_8UC3);
         unsigned char *splashData = bitmap->getDataPtr();
         for (int row = 0; row < bmpH; row++) {
@@ -4102,10 +4421,107 @@ OCRAnalysis::PNGRenderResult OCRAnalysis::renderElementsToPNG(
         // Update result dimensions
         result.imageWidth = cropped.cols;
         result.imageHeight = cropped.rows;
-        // Note: relative coordinates in result.elements are already set
-        // correctly as fractions of the crop box, which matches this cropped
-        // image.
 
+        // Add IMAGE elements for every entry in elements.images (which
+        // includes both embedded raster images and vector graphics detected
+        // by extractPDFElements).  Save a high-DPI crop from the rasterised
+        // page so callers can verify the returned images are at render DPI.
+        int savedImageCount = 0;
+        for (const auto &img : elements.images) {
+          // Convert PDF coords to top-left crop-relative pixels.
+          double imgPxX = (img.x - minX) * scale;
+          double imgPxY =
+              (pageHeightPt - (img.y - minY + img.displayHeight)) * scale;
+          double imgPxW = img.displayWidth * scale;
+          double imgPxH = img.displayHeight * scale;
+
+          // Skip elements that fall entirely outside the rendered area
+          if (imgPxX + imgPxW <= 0 || imgPxX >= result.imageWidth ||
+              imgPxY + imgPxH <= 0 || imgPxY >= result.imageHeight)
+            continue;
+
+          // Crop the rasterised image at render DPI for this element
+          int cx = std::max(0, static_cast<int>(imgPxX));
+          int cy = std::max(0, static_cast<int>(imgPxY));
+          int cw = std::min(static_cast<int>(std::ceil(imgPxW)),
+                            result.imageWidth - cx);
+          int ch = std::min(static_cast<int>(std::ceil(imgPxH)),
+                            result.imageHeight - cy);
+
+          cv::Mat imgCrop;
+          if (cw > 0 && ch > 0) {
+            imgCrop = cropped(cv::Rect(cx, cy, cw, ch)).clone();
+            if (!outputDir.empty()) {
+              std::string imgSavePath =
+                  outputDir + "/" + baseName + "_rendered_image_" +
+                  std::to_string(++savedImageCount) + ".png";
+              cv::imwrite(imgSavePath, imgCrop);
+              std::cerr << "DEBUG: Saved rendered image crop: " << imgSavePath
+                        << std::endl;
+            }
+          } else {
+            imgCrop = img.image.clone();
+          }
+
+          RenderedElement imgElem;
+          imgElem.type = RenderedElement::IMAGE;
+          imgElem.relativeX = (imgPxX + imgPxW / 2.0) / result.imageWidth;
+          imgElem.relativeY = (imgPxY + imgPxH / 2.0) / result.imageHeight;
+          imgElem.relativeWidth = imgPxW / result.imageWidth;
+          imgElem.relativeHeight = imgPxH / result.imageHeight;
+          imgElem.image = imgCrop;
+          imgElem.rotationAngle = img.rotationAngle;
+          result.elements.push_back(imgElem);
+        }
+
+        // Add TEXT elements from elements.textLines.
+        // text.boundingBox stores PDF bottom-left coordinates
+        // (y = bottom edge of text, same space as images and crop-mark bounds).
+        // Use the same formula as for image elements to convert to pixels.
+        for (const auto &text : elements.textLines) {
+          double textLeft = text.boundingBox.x;
+          double textRight = textLeft + text.boundingBox.width;
+          double textBottom = text.boundingBox.y; // PDF y-up bottom
+          double textTop = textBottom + text.boundingBox.height; // PDF y-up top
+
+          // Skip text outside the crop area (PDF bottom-left coords)
+          if (textLeft < minX || textRight > maxX || textBottom < minY ||
+              textTop > maxY)
+            continue;
+
+          // Convert PDF bottom-left to top-left crop-relative pixels.
+          // Same formula as images:
+          //   pxY_top = (pageHeightPt - (textBottom - minY + height)) * scale
+          double pxX = (textLeft - minX) * scale;
+          double pxY =
+              (pageHeightPt - (textBottom - minY + text.boundingBox.height)) *
+              scale;
+          double pxW = text.boundingBox.width * scale;
+          double pxH = text.boundingBox.height * scale;
+
+          RenderedElement textElem;
+          textElem.type = RenderedElement::TEXT;
+          textElem.relativeX = (pxX + pxW / 2.0) / result.imageWidth;
+          textElem.relativeY = (pxY + pxH / 2.0) / result.imageHeight;
+          textElem.relativeWidth = pxW / result.imageWidth;
+          textElem.relativeHeight = pxH / result.imageHeight;
+          textElem.text = text.text;
+          textElem.fontName = text.fontName.empty() ? "Sans" : text.fontName;
+          textElem.fontSize = (text.fontSize > 0) ? text.fontSize * 0.75 : 10.0;
+          textElem.isBold = text.isBold;
+          textElem.isItalic = text.isItalic;
+          result.elements.push_back(textElem);
+        }
+
+        // Draw bounding boxes for all elements and save alongside the plain
+        // render.
+        {
+          cv::Mat annotated = drawElementBoxes(cropped, result.elements);
+          std::string annotPath = outputDir + "/" + baseName + "_annotated.png";
+          cv::imwrite(annotPath, annotated);
+          std::cerr << "DEBUG: Saved annotated image: " << annotPath
+                    << std::endl;
+        }
         result.success = true;
         return result;
 
@@ -4359,30 +4775,28 @@ OCRAnalysis::PNGRenderResult OCRAnalysis::renderElementsToPNG(
     cairo_set_source_rgb(cr, 0.0, 0.0, 0.0);
 
     for (const auto &text : elements.textLines) {
-      // Skip if text starts outside the content area
-      // Only render text that is mostly within the bounds
-      double textLeft = text.boundingBox.x;
-      double textTop = text.boundingBox.y;
-      double textRight = text.boundingBox.x + text.boundingBox.width;
-      double textBottom = text.boundingBox.y + text.boundingBox.height;
+      // text.boundingBox.y is screen y of the TOP of the text box (y-down).
+      // Convert to PDF bottom-left coords (y-up) for filtering and positioning.
+      double pdfTextLeft = text.boundingBox.x;
+      double pdfTextRight = text.boundingBox.x + text.boundingBox.width;
+      double pdfTextBottom =
+          elements.pageHeight - text.boundingBox.y - text.boundingBox.height;
+      double pdfTextTop = elements.pageHeight - text.boundingBox.y;
 
-      // Skip if text left edge is outside the left bound or right edge is
-      // outside the right bound This ensures only text that is mostly within
-      // the rectangle is rendered
-      if (textLeft < minX || textRight > maxX || textTop < minY ||
-          textBottom > maxY) {
+      // Skip text outside the content area (strict containment)
+      if (pdfTextLeft < minX || pdfTextRight > maxX || pdfTextBottom < minY ||
+          pdfTextTop > maxY) {
         std::cerr << "DEBUG: Filtering out text \"" << text.text.substr(0, 20)
-                  << "\" at (" << textLeft << "," << textTop << ") to ("
-                  << textRight << "," << textBottom << "), bounds: (" << minX
-                  << "," << minY << ") to (" << maxX << "," << maxY << ")"
-                  << std::endl;
+                  << "\" pdfBox=(" << pdfTextLeft << "," << pdfTextBottom
+                  << ") to (" << pdfTextRight << "," << pdfTextTop
+                  << "), bounds: (" << minX << "," << minY << ") to (" << maxX
+                  << "," << maxY << ")" << std::endl;
         continue;
       }
 
-      double x = text.boundingBox.x - minX + margin;
-      // Convert from PDF bottom-left to Cairo top-left
-      // text.boundingBox.y is the bottom of the text in PDF coordinates
-      double y = pageHeightPt - (text.boundingBox.y - minY) - margin;
+      double x = pdfTextLeft - minX + margin;
+      // Cairo y of text baseline = distance from content top to text bottom
+      double y = pageHeightPt - (pdfTextBottom - minY) + margin;
 
       std::cerr << "DEBUG: Rendering text at (" << x << ", " << y
                 << "), original PDF pos: (" << text.boundingBox.x << ", "
@@ -4413,9 +4827,9 @@ OCRAnalysis::PNGRenderResult OCRAnalysis::renderElementsToPNG(
       cairo_move_to(cr, x, y);
       cairo_show_text(cr, text.text.c_str());
 
-      // Add to result -- centre-point relative coordinates
-      // text y is currently the baseline; the bounding box top is at y minus
-      // the rendered height.
+      // Add to result -- centre-point relative coordinates.
+      // pxY is the pixel y of the baseline (bottom of text box); centre is
+      // pxY - pxH/2 (moving upward by half the height).
       double pxX = x * scale;
       double pxY = y * scale;
       double pxW = text.boundingBox.width * scale;
@@ -4424,7 +4838,7 @@ OCRAnalysis::PNGRenderResult OCRAnalysis::renderElementsToPNG(
       RenderedElement elem;
       elem.type = RenderedElement::TEXT;
       elem.relativeX = (pxX + pxW / 2.0) / imageWidth;
-      elem.relativeY = (pxY + pxH / 2.0) / imageHeight;
+      elem.relativeY = (pxY - pxH / 2.0) / imageHeight;
       elem.relativeWidth = pxW / imageWidth;
       elem.relativeHeight = pxH / imageHeight;
       elem.text = text.text;
@@ -4450,7 +4864,7 @@ OCRAnalysis::PNGRenderResult OCRAnalysis::renderElementsToPNG(
 
       double x = text.boundingBox.x - minX + margin;
       // OCR coordinates are already in top-left origin (from image pixel
-      // space), so NO Y-flip is needed — unlike PDF text which uses
+      // space), so NO Y-flip is needed â€” unlike PDF text which uses
       // bottom-left origin.
       double y = text.boundingBox.y - minY + margin;
 
@@ -4521,7 +4935,7 @@ void OCRAnalysis::sortByPosition(PNGRenderResult &result) {
   // Elements on the same horizontal line (similar Y) are sorted by X
   std::sort(result.elements.begin(), result.elements.end(),
             [](const RenderedElement &a, const RenderedElement &b) {
-              // Define tolerance for "same line" – fraction of image height
+              // Define tolerance for "same line" â€“ fraction of image height
               // (roughly equivalent to ~5px on a 1000px image)
               const double Y_TOLERANCE = 0.005;
 
@@ -4533,6 +4947,38 @@ void OCRAnalysis::sortByPosition(PNGRenderResult &result) {
               // Otherwise, sort by Y (top to bottom)
               return a.relativeY < b.relativeY;
             });
+}
+
+cv::Mat
+OCRAnalysis::drawElementBoxes(const cv::Mat &image,
+                              const std::vector<RenderedElement> &elements) {
+  cv::Mat annotated = image.clone();
+  const int W = annotated.cols;
+  const int H = annotated.rows;
+
+  for (const auto &elem : elements) {
+    int pw = static_cast<int>(elem.relativeWidth * W);
+    int ph = static_cast<int>(elem.relativeHeight * H);
+    int rx = static_cast<int>(elem.relativeX * W) - pw / 2;
+    int ry = static_cast<int>(elem.relativeY * H) - ph / 2;
+    rx = std::max(0, rx);
+    ry = std::max(0, ry);
+    pw = std::min(pw, W - rx);
+    ph = std::min(ph, H - ry);
+    if (pw <= 0 || ph <= 0)
+      continue;
+
+    cv::Scalar color;
+    if (elem.type == RenderedElement::TEXT)
+      color = cv::Scalar(0, 200, 0); // green  â€” text
+    else if (elem.type == RenderedElement::IMAGE)
+      color = cv::Scalar(200, 0, 0); // blue   â€” image
+    else
+      color = cv::Scalar(0, 0, 200); // red    â€” datamatrix
+
+    cv::rectangle(annotated, cv::Rect(rx, ry, pw, ph), color, 2);
+  }
+  return annotated;
 }
 
 bool OCRAnalysis::alignAndMarkElements(const std::string &renderedImagePath,
@@ -4979,7 +5425,7 @@ bool OCRAnalysis::alignAndMarkElements(const std::string &renderedImagePath,
 
       std::cerr << "Element " << box.elemIdx << " \"" << box.text.substr(0, 20)
                 << "\": fontSize=" << box.fontSize << "pt, adjusted height "
-                << oldHeight << " → " << uniformHeight << ", y offset "
+                << oldHeight << " â†’ " << uniformHeight << ", y offset "
                 << (heightDiff / 2) << std::endl;
     }
 
@@ -5077,7 +5523,7 @@ bool OCRAnalysis::alignAndMarkElements(const std::string &renderedImagePath,
         box.x -= expandLeft;
         box.width += expandLeft + expandRight;
         std::cerr << "Element " << box.elemIdx << ": expanded width "
-                  << oldWidth << " → " << box.width << " (left+" << expandLeft
+                  << oldWidth << " â†’ " << box.width << " (left+" << expandLeft
                   << ", right+" << expandRight << ")" << std::endl;
       }
     }
@@ -5163,7 +5609,8 @@ bool OCRAnalysis::alignAndMarkElements(const std::string &renderedImagePath,
           std::cerr << "Element " << box.elemIdx << " \"" << box.text
                     << "\": OCR=\"" << detectedText
                     << "\" similarity=" << std::fixed << std::setprecision(2)
-                    << similarity << " " << (matches ? "✓" : "✗") << std::endl;
+                    << similarity << " " << (matches ? "âœ“" : "âœ—")
+                    << std::endl;
 
           delete[] ocrText;
 

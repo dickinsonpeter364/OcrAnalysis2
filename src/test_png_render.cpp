@@ -11,13 +11,17 @@ int main(int argc, char *argv[]) {
   // Check for PDF file argument
   if (argc < 2) {
     std::cerr << "Usage: " << argv[0]
-              << " <pdf_file> [dpi] [output_dir] [bounds_mode]" << std::endl;
+              << " <pdf_file> [dpi] [output_dir] [bounds_mode] [overlay_image]"
+              << std::endl;
     std::cerr << "  dpi: Resolution in dots per inch (default: 300)"
               << std::endl;
     std::cerr << "  output_dir: Directory to save PNG (default: images)"
               << std::endl;
     std::cerr << "  bounds_mode: 'crop' (default) or 'rect' for largest "
                  "rectangle"
+              << std::endl;
+    std::cerr << "  overlay_image: Path to an extra image to annotate with "
+                 "element boxes (any resolution)"
               << std::endl;
     std::cerr << std::endl;
     std::cerr << "Example: " << argv[0] << " document.pdf 600 output rect"
@@ -28,6 +32,7 @@ int main(int argc, char *argv[]) {
   std::string pdfPath = argv[1];
   double dpi = 300.0;
   std::string outputDir = "images";
+  std::string overlayImagePath;
 
   // Auto-detect bounds mode from filename:
   // L2* files have crop marks; all others use largest rectangle
@@ -59,9 +64,15 @@ int main(int argc, char *argv[]) {
                   << "', using default 300" << std::endl;
       }
     }
-    // Otherwise treat as output directory
+    // Check if it looks like an image file (has a recognised image extension)
     else {
-      outputDir = arg;
+      std::string ext = std::filesystem::path(argLower).extension().string();
+      if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" ||
+          ext == ".bmp" || ext == ".tif" || ext == ".tiff") {
+        overlayImagePath = arg;
+      } else {
+        outputDir = arg;
+      }
     }
   }
 
@@ -220,15 +231,15 @@ int main(int argc, char *argv[]) {
   std::cout << "All elements (with relative coordinates):" << std::endl;
   std::cout
       << "+------+------------+----------+----------+---------+----------+"
-         "----------------------+"
+         "----------------------+------------------+----------+"
       << std::endl;
   std::cout
       << "| #    | Type       | CX (rel) | CY (rel) | W (rel) | H (rel)  |"
-         " Detail               | OCR Conf |"
+         " Detail               | Font             | OCR Conf |"
       << std::endl;
   std::cout
       << "+------+------------+----------+----------+---------+----------+"
-         "----------------------+----------+"
+         "----------------------+------------------+----------+"
       << std::endl;
 
   for (size_t i = 0; i < result.elements.size(); i++) {
@@ -276,13 +287,26 @@ int main(int argc, char *argv[]) {
       detail = detail.substr(0, 17) + "...";
     }
 
+    // Font column (TEXT elements only): "name size[B][I]", truncated to 16
+    std::string fontStr;
+    if (elem.type == ocr::OCRAnalysis::RenderedElement::TEXT) {
+      std::ostringstream fs;
+      fs << std::fixed << std::setprecision(1) << elem.fontSize;
+      std::string attrs = (elem.isBold ? "B" : "") + std::string(elem.isItalic ? "I" : "");
+      std::string candidate = elem.fontName + " " + fs.str() + attrs;
+      if (candidate.length() > 16)
+        candidate = candidate.substr(0, 13) + "...";
+      fontStr = candidate;
+    }
+
     std::cout << "| " << std::setw(4) << std::left << i + 1 << " | "
               << std::setw(10) << std::left << typeStr << " | " << std::setw(8)
               << std::right << std::fixed << std::setprecision(4)
               << elem.relativeX << " | " << std::setw(8) << elem.relativeY
               << " | " << std::setw(7) << elem.relativeWidth << " | "
               << std::setw(8) << elem.relativeHeight << " | " << std::setw(20)
-              << std::left << detail << " | ";
+              << std::left << detail << " | " << std::setw(16) << std::left
+              << fontStr << " | ";
     // OCR confidence column
     if (elem.ocrConfidence >= 0.0f) {
       std::cout << std::setw(7) << std::right << std::fixed
@@ -292,9 +316,31 @@ int main(int argc, char *argv[]) {
     }
     std::cout << " |" << std::endl;
   }
+  // Append ignored text lines (symbol fonts such as Wingdings) to the table
+  for (size_t i = 0; i < elements.ignoredTextLines.size(); i++) {
+    const auto &tr = elements.ignoredTextLines[i];
+    std::ostringstream fs;
+    fs << std::fixed << std::setprecision(1) << tr.fontSize;
+    std::string attrs =
+        (tr.isBold ? "B" : "") + std::string(tr.isItalic ? "I" : "");
+    std::string fontStr = tr.fontName + " " + fs.str() + attrs;
+    if (fontStr.length() > 16)
+      fontStr = fontStr.substr(0, 13) + "...";
+    std::string detail = tr.text;
+    if (detail.length() > 20)
+      detail = detail.substr(0, 17) + "...";
+    std::cout << "| " << std::setw(4) << std::left
+              << (result.elements.size() + i + 1) << " | " << std::setw(10)
+              << std::left << "TEXT(ign)" << " | " << std::setw(8) << std::right
+              << "     n/a" << " | " << std::setw(8) << "     n/a" << " | "
+              << std::setw(7) << "    n/a" << " | " << std::setw(8) << "     n/a"
+              << " | " << std::setw(20) << std::left << detail << " | "
+              << std::setw(16) << std::left << fontStr << " |          |"
+              << std::endl;
+  }
   std::cout
       << "+------+------------+----------+----------+---------+----------+"
-         "----------------------+----------+"
+         "----------------------+------------------+----------+"
       << std::endl;
   std::cout << std::endl;
 
@@ -318,6 +364,31 @@ int main(int argc, char *argv[]) {
   std::cout << "  Content area: " << (maxX - minX) << " x " << (maxY - minY)
             << " (relative)" << std::endl;
   std::cout << std::endl;
+
+  // If an overlay image was supplied, draw the same element boxes onto it
+  // (scales automatically because relative coordinates are used).
+  if (!overlayImagePath.empty()) {
+    std::cout << "Overlay image: " << overlayImagePath << std::endl;
+    cv::Mat overlay = cv::imread(overlayImagePath, cv::IMREAD_COLOR);
+    if (overlay.empty()) {
+      std::cerr << "Warning: Could not load overlay image: " << overlayImagePath
+                << std::endl;
+    } else {
+      cv::Mat annotated =
+          ocr::OCRAnalysis::drawElementBoxes(overlay, result.elements);
+      std::string overlayStem =
+          std::filesystem::path(overlayImagePath).stem().string();
+      std::string overlayOut = outputDir + "/" + overlayStem + "_annotated.png";
+      if (cv::imwrite(overlayOut, annotated)) {
+        std::cout << "Overlay annotated image saved: " << overlayOut
+                  << std::endl;
+      } else {
+        std::cerr << "Warning: Failed to save overlay annotated image: "
+                  << overlayOut << std::endl;
+      }
+    }
+    std::cout << std::endl;
+  }
 
   std::cout << "Test completed successfully!" << std::endl;
 

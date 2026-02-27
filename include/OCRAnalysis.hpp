@@ -358,6 +358,9 @@ public:
     std::string fullText; ///< Full text content
     std::vector<TextRegion>
         textLines; ///< Text lines with positions and orientation
+    std::vector<TextRegion>
+        ignoredTextLines; ///< Text lines excluded from processing (e.g. symbol
+                          ///< fonts such as Wingdings)
 
     // Embedded images
     std::vector<PDFEmbeddedImage> images; ///< Actual embedded images
@@ -566,6 +569,21 @@ public:
    * @param result Reference to PNGRenderResult whose elements will be sorted
    */
   static void sortByPosition(PNGRenderResult &result);
+
+  /**
+   * @brief Draw element bounding boxes onto an image using relative coordinates
+   *
+   * Scales the relative coordinates stored in @p elements to the actual pixel
+   * dimensions of @p image, so the function works correctly regardless of the
+   * image resolution.  TEXT boxes are drawn in green, IMAGE boxes in blue, and
+   * DATAMATRIX boxes in red.
+   *
+   * @param image Source image to annotate (not modified in-place)
+   * @param elements Elements whose bounding boxes should be drawn
+   * @return A clone of @p image with the boxes drawn on top
+   */
+  static cv::Mat drawElementBoxes(const cv::Mat &image,
+                                  const std::vector<RenderedElement> &elements);
 
   /**
    * @brief Structure to hold element position and size in relative coordinates
