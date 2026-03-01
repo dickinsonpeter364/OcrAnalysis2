@@ -257,6 +257,16 @@ target_link_libraries(test_find_images
         ocr_analysis
 )
 
+# Define the cleanup image test executable
+add_executable(test_cleanup_image
+    src/test_cleanup_image.cpp
+)
+
+target_link_libraries(test_cleanup_image
+    PRIVATE
+        ocr_analysis
+)
+
 # Optional: Install targets
 install(TARGETS ocr_analysis ocr_demo
     LIBRARY DESTINATION lib

@@ -3771,6 +3771,131 @@ cv::Mat OCRAnalysis::preprocessImage(const cv::Mat &image) {
   return processed;
 }
 
+// static
+cv::Mat OCRAnalysis::cleanupForOCR(const cv::Mat &input) {
+  if (input.empty())
+    return {};
+
+  // ── Step 1: separate colour from transparency ─────────────────────────────
+  // For RGBA images the root cause of "bleed-through" is that compositing a
+  // semi-transparent dark edge onto white produces a mid-grey pixel.  If we
+  // then threshold on grey level those mid-grey pixels incorrectly appear as
+  // ink.  The fix is to treat the alpha channel as a hard gate: only pixels
+  // with alpha > 200 (≈ 78 % opaque) are even allowed to be classified as
+  // ink.  Everything else is forced to white before any thresholding occurs.
+  //
+  // For the colour channels we convert to greyscale WITHOUT compositing so
+  // the actual ink darkness is preserved at its true value, not diluted by
+  // the blend with white.
+
+  cv::Mat gray;
+  cv::Mat opaqueMask; // non-empty only for RGBA input
+
+  if (input.channels() == 4) {
+    std::vector<cv::Mat> ch;
+    cv::split(input, ch); // B, G, R, A  (all CV_8U)
+
+    // Opaque mask: alpha > 200 → 255 (include), ≤ 200 → 0 (force white).
+    cv::threshold(ch[3], opaqueMask, 200, 255, cv::THRESH_BINARY);
+
+    // Greyscale from the colour channels only (no alpha blending).
+    cv::Mat bgr;
+    cv::merge(std::vector<cv::Mat>{ch[0], ch[1], ch[2]}, bgr);
+    cv::cvtColor(bgr, gray, cv::COLOR_BGR2GRAY);
+
+  } else if (input.channels() == 3) {
+    cv::cvtColor(input, gray, cv::COLOR_BGR2GRAY);
+  } else {
+    gray = input.clone();
+  }
+
+  // ── Step 2: gentle noise reduction ───────────────────────────────────────
+  cv::GaussianBlur(gray, gray, cv::Size(3, 3), 0);
+
+  // ── Step 3: find the optimal threshold from the histogram ─────────────────
+  // We compute the histogram only over the opaque pixels (via opaqueMask for
+  // RGBA, or the whole image for other formats).  This means the semi-
+  // transparent edges that caused the 57 % bleed-through are excluded from
+  // the analysis entirely.  The remaining opaque pixels form a naturally
+  // bimodal distribution – a peak near 255 for the label paper / background
+  // and a dark cluster for the real ink strokes.  We locate the valley
+  // between those two peaks and use it as a global binary threshold.
+  //
+  // Algorithm:
+  //   a) Build the 256-bin histogram (masked to opaque pixels if RGBA).
+  //   b) Smooth with a Gaussian to suppress per-bin noise.
+  //   c) Find the background peak – the tallest bin in [128, 255].
+  //   d) Find the ink peak        – the tallest bin in [0, bgPeak-10].
+  //   e) Walk from inkPeak to bgPeak; record the bin with the lowest count
+  //      (the valley), which is the natural ink / background boundary.
+  //   f) Apply a global binary threshold at that valley value.
+  //      Pixels at or above the valley → white; below → black ink.
+
+  cv::Mat hist;
+  const int   histSize  = 256;
+  const float range[]   = {0.0f, 256.0f};
+  const float *histRange = range;
+  cv::calcHist(&gray, 1, nullptr,
+               opaqueMask.empty() ? cv::Mat() : opaqueMask,
+               hist, 1, &histSize, &histRange, true, false);
+
+  // (b) Smooth the 256×1 histogram column with a vertical Gaussian.
+  cv::GaussianBlur(hist, hist, cv::Size(1, 11), 0);
+
+  // (c) Find the first local maximum walking from the dark end (bin 0).
+  //     This is the dark-ink cluster.  We detect it by watching for the
+  //     histogram to rise then fall.
+  int   firstPeakBin   = -1;
+  float firstPeakCount = 0.0f;
+  bool  wasAscending   = false;
+  for (int b = 1; b < 240; b++) {
+    float cur  = hist.at<float>(b);
+    float prev = hist.at<float>(b - 1);
+    if (cur > prev) {
+      wasAscending = true;
+      if (cur > firstPeakCount) { firstPeakCount = cur; firstPeakBin = b; }
+    } else if (wasAscending && cur < prev) {
+      break; // just passed the crest of the first peak
+    }
+  }
+  if (firstPeakBin < 0) firstPeakBin = 0; // no peak: nothing is ink
+
+  // (d) Find the background peak – the tallest bin to the RIGHT of firstPeakBin.
+  //     (On a pharmaceutical label this is the dominant paper/background colour.)
+  float bgPeakCount = 0.0f;
+  int   bgPeakBin   = 255;
+  for (int b = firstPeakBin + 1; b < 256; b++) {
+    float v = hist.at<float>(b);
+    if (v > bgPeakCount) { bgPeakCount = v; bgPeakBin = b; }
+  }
+
+  // (e) Walk from the ink peak toward the background peak and find the valley:
+  //     the bin with the lowest count between those two landmarks.  Stop early
+  //     if the histogram has already risen to twice the running minimum, which
+  //     means we are climbing into the next cluster and the valley is behind us.
+  float valleyCount = firstPeakCount;
+  int   threshBin   = firstPeakBin;
+  for (int b = firstPeakBin + 1; b < bgPeakBin; b++) {
+    float v = hist.at<float>(b);
+    if (v < valleyCount) { valleyCount = v; threshBin = b; }
+    // Once we have moved far enough from the ink peak, stop as soon as the
+    // histogram has doubled from its running minimum — the valley is behind us.
+    if (b > firstPeakBin + 5 && v > valleyCount * 2.0f) break;
+  }
+
+  // (f) Global binary threshold: pixels at or below the valley → black ink.
+  cv::Mat binary;
+  cv::threshold(gray, binary, threshBin, 255, cv::THRESH_BINARY);
+
+  // ── Step 4: force semi-transparent pixels to white ────────────────────────
+  // Any pixel that failed the alpha gate in Step 1 is set to white (255)
+  // regardless of what the grey-level threshold decided.
+  if (!opaqueMask.empty())
+    binary.setTo(255, ~opaqueMask);
+
+  return binary;
+}
+
 void OCRAnalysis::setImage(const cv::Mat &image) {
   cv::Mat rgbImage;
 

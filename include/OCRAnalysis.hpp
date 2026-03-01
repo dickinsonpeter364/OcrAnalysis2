@@ -586,6 +586,33 @@ public:
                                   const std::vector<RenderedElement> &elements);
 
   /**
+   * @brief Clean up an image to produce black text on a white background for
+   * OCR
+   *
+   * Applies a sequence of image-processing steps optimised for Tesseract
+   * recognition, with particular care to exclude semi-transparent label bleed:
+   *  1. For RGBA input: the alpha channel is thresholded at 200 to create an
+   *     opaque-pixel mask.  Pixels with alpha ≤ 200 are forced to white in
+   *     the output regardless of their colour, eliminating semi-transparent
+   *     edge bleed.  The colour channels are converted to greyscale without
+   *     compositing so ink darkness is not diluted.  For RGB/grey input the
+   *     image is simply converted to greyscale.
+   *  2. Reduces high-frequency noise with a gentle Gaussian blur.
+   *  3. Computes the 256-bin histogram over opaque pixels only (masked for
+   *     RGBA) and smooths it.  The first local maximum from the dark end is
+   *     identified as the ink cluster peak.  The algorithm then walks toward
+   *     the dominant background peak and records the valley (lowest bin
+   *     count) between those two landmarks, stopping as soon as the histogram
+   *     has doubled from the running minimum (indicating the start of the
+   *     next cluster).  A global binary threshold at the valley bin retains
+   *     only the truly dark ink strokes and discards everything lighter.
+   *
+   * @param image Input image (any number of channels, CV_8U depth).
+   * @return CV_8UC1 binary image: black text on a white background.
+   */
+  static cv::Mat cleanupForOCR(const cv::Mat &image);
+
+  /**
    * @brief Structure to hold element position and size in relative coordinates
    *
    * All coordinates are fractions (0.0 to 1.0) relative to the calculated
