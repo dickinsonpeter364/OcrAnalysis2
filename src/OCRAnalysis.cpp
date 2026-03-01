@@ -3772,7 +3772,8 @@ cv::Mat OCRAnalysis::preprocessImage(const cv::Mat &image) {
 }
 
 // static
-cv::Mat OCRAnalysis::cleanupForOCR(const cv::Mat &input) {
+cv::Mat OCRAnalysis::cleanupForOCR(const cv::Mat &input,
+                                    CleanupDiagnostics *diag) {
   if (input.empty())
     return {};
 
@@ -3860,30 +3861,53 @@ cv::Mat OCRAnalysis::cleanupForOCR(const cv::Mat &input) {
   }
   if (firstPeakBin < 0) firstPeakBin = 0; // no peak: nothing is ink
 
-  // (d) Find the background peak – the tallest bin to the RIGHT of firstPeakBin.
-  //     (On a pharmaceutical label this is the dominant paper/background colour.)
-  float bgPeakCount = 0.0f;
-  int   bgPeakBin   = 255;
+  // (d) Walk from the ink peak to find the first valley.
+  //     Track the running minimum; stop the moment the histogram rises —
+  //     that upward step marks the bottom of the valley between the dark
+  //     ink cluster and the next lighter cluster.
+  float valleyCount = firstPeakCount;
+  int   valleyBin   = firstPeakBin;
   for (int b = firstPeakBin + 1; b < 256; b++) {
     float v = hist.at<float>(b);
-    if (v > bgPeakCount) { bgPeakCount = v; bgPeakBin = b; }
+    if (v < valleyCount) { valleyCount = v; valleyBin = b; }
+    else { break; } // histogram turned upward — valley is behind us
   }
 
-  // (e) Walk from the ink peak toward the background peak and find the valley:
-  //     the bin with the lowest count between those two landmarks.  Stop early
-  //     if the histogram has already risen to twice the running minimum, which
-  //     means we are climbing into the next cluster and the valley is behind us.
-  float valleyCount = firstPeakCount;
-  int   threshBin   = firstPeakBin;
-  for (int b = firstPeakBin + 1; b < bgPeakBin; b++) {
+  // (e) Find the first local peak AFTER the valley.
+  //     Walk forward from valleyBin until the histogram rises then falls;
+  //     the crest of that first rise is the next cluster peak.  Using this
+  //     first local maximum rather than the global maximum keeps the threshold
+  //     close to the ink/background boundary and avoids being pulled all the
+  //     way to a very bright background peak at the far end of the histogram.
+  int   nextPeakBin   = valleyBin;
+  float nextPeakCount = valleyCount;
+  bool  nextAscend    = false;
+  for (int b = valleyBin + 1; b < 256; b++) {
+    float cur  = hist.at<float>(b);
+    float prev = hist.at<float>(b - 1);
+    if (cur > prev) {
+      nextAscend = true;
+      if (cur > nextPeakCount) { nextPeakCount = cur; nextPeakBin = b; }
+    } else if (nextAscend && cur < prev) {
+      break; // just past the crest of the next peak
+    }
+  }
+
+  // (f) Find the first valley AFTER the next peak — same logic as (d).
+  float nextValleyCount = nextPeakCount;
+  int   nextValleyBin   = nextPeakBin;
+  for (int b = nextPeakBin + 1; b < 256; b++) {
     float v = hist.at<float>(b);
-    if (v < valleyCount) { valleyCount = v; threshBin = b; }
-    // Once we have moved far enough from the ink peak, stop as soon as the
-    // histogram has doubled from its running minimum — the valley is behind us.
-    if (b > firstPeakBin + 5 && v > valleyCount * 2.0f) break;
+    if (v < nextValleyCount) { nextValleyCount = v; nextValleyBin = b; }
+    else { break; }
   }
 
-  // (f) Global binary threshold: pixels at or below the valley → black ink.
+  // (g) Use the valley after the next peak as the threshold.
+  //     This sits at the natural low point between the two lighter clusters
+  //     immediately beyond the ink region.
+  int threshBin = nextValleyBin;
+
+  // (g) Global binary threshold: pixels at or below threshBin → black ink.
   cv::Mat binary;
   cv::threshold(gray, binary, threshBin, 255, cv::THRESH_BINARY);
 
@@ -3892,6 +3916,76 @@ cv::Mat OCRAnalysis::cleanupForOCR(const cv::Mat &input) {
   // regardless of what the grey-level threshold decided.
   if (!opaqueMask.empty())
     binary.setTo(255, ~opaqueMask);
+
+  // ── Step 5: optional diagnostics ──────────────────────────────────────────
+  if (diag) {
+    diag->firstPeakBin  = firstPeakBin;
+    diag->valleyBin     = valleyBin;
+    diag->nextPeakBin   = nextPeakBin;
+    diag->nextValleyBin = nextValleyBin;
+    diag->threshBin     = threshBin;
+
+    // Render a 512 × 360 histogram image (2 px per bin, sqrt-scaled bars).
+    const int barH     = 300;
+    const int marginT  = 40;  // room for labels above bars
+    const int marginB  = 20;
+    const int W        = 512;
+    const int H        = marginT + barH + marginB;
+
+    cv::Mat histImg(H, W, CV_8UC3, cv::Scalar(255, 255, 255));
+
+    // Find max sqrt value for scaling.
+    float sqrtMax = 0.0f;
+    for (int b = 0; b < 256; b++)
+      sqrtMax = std::max(sqrtMax, std::sqrt(hist.at<float>(b)));
+    if (sqrtMax < 1.0f) sqrtMax = 1.0f;
+
+    // Draw grey bars (2 px wide per bin).
+    for (int b = 0; b < 256; b++) {
+      int h  = static_cast<int>(barH * std::sqrt(hist.at<float>(b)) / sqrtMax);
+      int x0 = b * 2;
+      int y0 = marginT + barH - h;
+      cv::rectangle(histImg,
+                    cv::Point(x0, y0),
+                    cv::Point(x0 + 1, marginT + barH - 1),
+                    cv::Scalar(160, 160, 160), cv::FILLED);
+    }
+
+    // Draw a thin baseline.
+    cv::line(histImg,
+             cv::Point(0,   marginT + barH),
+             cv::Point(W-1, marginT + barH),
+             cv::Scalar(0, 0, 0), 1);
+
+    // Helper: draw a vertical coloured marker + label above bars.
+    auto drawMarker = [&](int bin, cv::Scalar colour, const std::string &label) {
+      int x = bin * 2 + 1;
+      cv::line(histImg,
+               cv::Point(x, marginT),
+               cv::Point(x, marginT + barH),
+               colour, 1);
+      // Place label above the bar area; clamp to image edges.
+      int tx = std::max(2, std::min(x - 18, W - 60));
+      cv::putText(histImg, label,
+                  cv::Point(tx, marginT - 4),
+                  cv::FONT_HERSHEY_SIMPLEX, 0.38, colour, 1, cv::LINE_AA);
+    };
+
+    // Markers: red=ink peak, green=valley1, orange=next peak,
+    //          purple=valley2 (threshold), blue=threshold line.
+    drawMarker(firstPeakBin,  cv::Scalar(200,   0,   0),
+               "pk=" + std::to_string(firstPeakBin));
+    drawMarker(valleyBin,     cv::Scalar(  0, 160,   0),
+               "vl=" + std::to_string(valleyBin));
+    drawMarker(nextPeakBin,   cv::Scalar(  0, 140, 255),
+               "np=" + std::to_string(nextPeakBin));
+    drawMarker(nextValleyBin, cv::Scalar(160,   0, 160),
+               "v2=" + std::to_string(nextValleyBin));
+    drawMarker(threshBin,    cv::Scalar(  0,   0, 220),
+               "th=" + std::to_string(threshBin));
+
+    diag->histImage = histImg;
+  }
 
   return binary;
 }

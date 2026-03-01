@@ -42,13 +42,21 @@ int main(int argc, char *argv[]) {
   std::cout << "Loaded: " << inputPath << "  (" << input.cols << "x"
             << input.rows << ", " << input.channels() << " ch)\n";
 
-  // ── Clean up ──────────────────────────────────────────────────────────────
-  cv::Mat cleaned = ocr::OCRAnalysis::cleanupForOCR(input);
+  // ── Clean up (with diagnostics) ───────────────────────────────────────────
+  ocr::OCRAnalysis::CleanupDiagnostics diag;
+  cv::Mat cleaned = ocr::OCRAnalysis::cleanupForOCR(input, &diag);
 
   if (cleaned.empty()) {
     std::cerr << "Error: cleanup produced an empty image\n";
     return 1;
   }
+
+  std::cout << "Histogram bins:"
+            << "  ink-peak="   << diag.firstPeakBin
+            << "  valley="     << diag.valleyBin
+            << "  next-peak="  << diag.nextPeakBin
+            << "  next-valley=" << diag.nextValleyBin
+            << "  threshold="  << diag.threshBin << "\n";
 
   // ── Write output ──────────────────────────────────────────────────────────
   fs::path outDir(outputDir);
@@ -67,6 +75,16 @@ int main(int argc, char *argv[]) {
   if (!cv::imwrite(outPath.string(), cleaned)) {
     std::cerr << "Error: could not write image: " << outPath << "\n";
     return 1;
+  }
+
+  // ── Write histogram image ─────────────────────────────────────────────────
+  fs::path stem     = fs::path(outputName).stem();
+  fs::path histPath = outDir / (stem.string() + "_histogram.png");
+  if (!diag.histImage.empty()) {
+    if (!cv::imwrite(histPath.string(), diag.histImage))
+      std::cerr << "Warning: could not write histogram image: " << histPath << "\n";
+    else
+      std::cout << "Histogram image written to: " << histPath.string() << "\n";
   }
 
   // Report ink coverage so the aggressiveness of the threshold is visible.

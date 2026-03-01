@@ -586,6 +586,20 @@ public:
                                   const std::vector<RenderedElement> &elements);
 
   /**
+   * @brief Diagnostic output from cleanupForOCR, useful for visualising and
+   * tuning the histogram-based threshold.
+   */
+  struct CleanupDiagnostics {
+    cv::Mat histImage;  ///< 512×360 BGR image of the smoothed histogram with
+                        ///< annotated marker lines (sqrt-scaled bars).
+    int firstPeakBin;   ///< Bin of the dark-ink cluster peak.
+    int valleyBin;      ///< Bin of the first valley after the ink peak.
+    int nextPeakBin;    ///< Bin of the first local peak after the valley.
+    int nextValleyBin;  ///< Bin of the first valley after nextPeakBin.
+    int threshBin;      ///< Bin actually used as the binary threshold.
+  };
+
+  /**
    * @brief Clean up an image to produce black text on a white background for
    * OCR
    *
@@ -604,13 +618,18 @@ public:
    *     the dominant background peak and records the valley (lowest bin
    *     count) between those two landmarks, stopping as soon as the histogram
    *     has doubled from the running minimum (indicating the start of the
-   *     next cluster).  A global binary threshold at the valley bin retains
-   *     only the truly dark ink strokes and discards everything lighter.
+   *     next cluster).  A global binary threshold halfway between the valley
+   *     and the background peak retains ink anti-aliasing while discarding
+   *     lighter mid-tones.
    *
    * @param image Input image (any number of channels, CV_8U depth).
+   * @param diag  Optional pointer to a CleanupDiagnostics struct.  When
+   *              non-null the struct is filled with the smoothed histogram
+   *              image and the key bin positions used during thresholding.
    * @return CV_8UC1 binary image: black text on a white background.
    */
-  static cv::Mat cleanupForOCR(const cv::Mat &image);
+  static cv::Mat cleanupForOCR(const cv::Mat &image,
+                                CleanupDiagnostics *diag = nullptr);
 
   /**
    * @brief Structure to hold element position and size in relative coordinates
