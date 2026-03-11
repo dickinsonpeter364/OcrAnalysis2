@@ -3990,6 +3990,203 @@ cv::Mat OCRAnalysis::cleanupForOCR(const cv::Mat &input,
   return binary;
 }
 
+// static
+cv::Mat OCRAnalysis::cropToLabel(const cv::Mat &image,
+                                  int  darkThresh,
+                                  int  diffThresh,
+                                  bool tightLabel) {
+  if (image.empty()) return {};
+
+  // ── Grayscale conversion ──────────────────────────────────────────────────
+  // For RGBA images: extract an opaque-pixel mask (alpha > 200) so that
+  // transparent background pixels — which may have white RGB values — are
+  // never mistaken for backing paper or label in either threshold step.
+  cv::Mat gray;
+  cv::Mat opaqueMask; // empty for non-RGBA input
+  if (image.channels() == 1) {
+    gray = image;
+  } else if (image.channels() == 3) {
+    cv::cvtColor(image, gray, cv::COLOR_BGR2GRAY);
+  } else { // 4-channel RGBA
+    std::vector<cv::Mat> ch;
+    cv::split(image, ch);
+    cv::threshold(ch[3], opaqueMask, 200, 255, cv::THRESH_BINARY);
+    cv::Mat bgr;
+    cv::merge(std::vector<cv::Mat>{ch[0], ch[1], ch[2]}, bgr);
+    cv::cvtColor(bgr, gray, cv::COLOR_BGR2GRAY);
+    // Zero out transparent pixels so they don't pass either threshold.
+    gray.setTo(0, ~opaqueMask);
+  }
+
+  // ── Step 1: find backing paper by removing the very dark background ───────
+  // Pixels below darkThresh are background; everything else is backing paper
+  // or label.  A large morphological close bridges gaps (staple holes, thin
+  // dark lines between label rows) so the whole backing sheet forms one solid
+  // connected component.
+  cv::Mat paperMask;
+  cv::threshold(gray, paperMask, darkThresh, 255, cv::THRESH_BINARY);
+
+  cv::Mat k1 = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(31, 31));
+  cv::morphologyEx(paperMask, paperMask, cv::MORPH_CLOSE, k1);
+
+  cv::Mat labels, stats, centroids;
+  int nLabels = cv::connectedComponentsWithStats(
+      paperMask, labels, stats, centroids, 8, CV_32S);
+
+  if (nLabels <= 1) return {}; // nothing but background
+
+  // Pick the largest non-background component.
+  int bestLabel = 1;
+  int bestArea  = stats.at<int>(1, cv::CC_STAT_AREA);
+  for (int i = 2; i < nLabels; ++i) {
+    int a = stats.at<int>(i, cv::CC_STAT_AREA);
+    if (a > bestArea) { bestArea = a; bestLabel = i; }
+  }
+
+  cv::Rect paperRect(stats.at<int>(bestLabel, cv::CC_STAT_LEFT),
+                     stats.at<int>(bestLabel, cv::CC_STAT_TOP),
+                     stats.at<int>(bestLabel, cv::CC_STAT_WIDTH),
+                     stats.at<int>(bestLabel, cv::CC_STAT_HEIGHT));
+  paperRect &= cv::Rect(0, 0, image.cols, image.rows);
+  if (paperRect.empty()) return {};
+
+  if (!tightLabel)
+    return image(paperRect).clone();
+
+  // ── Step 2: find the label as the region that differs from the backing ──────
+  // The backing paper has a dominant (most common) grey intensity.  The label
+  // is stuck to the backing and is a different colour — lighter OR darker.
+  // We compute the histogram of the backing-paper crop, find its dominant bin
+  // (smoothed to suppress noise), then mark every pixel that deviates from
+  // that dominant grey by more than lightThresh intensity units.
+  cv::Mat paperGray = gray(paperRect);
+
+  // Build histogram over non-zero (opaque) pixels only.
+  cv::Mat nonZeroMask;
+  cv::threshold(paperGray, nonZeroMask, 0, 255, cv::THRESH_BINARY);
+
+  cv::Mat hist;
+  const int   histSize  = 256;
+  const float range[]   = {0.0f, 256.0f};
+  const float *histRange = range;
+  cv::calcHist(&paperGray, 1, nullptr, nonZeroMask,
+               hist, 1, &histSize, &histRange, true, false);
+  cv::GaussianBlur(hist, hist, cv::Size(1, 11), 0);
+
+  // Find the optimal threshold between backing paper and label using Otsu's
+  // method applied to the masked histogram.  This does not assume which class
+  // is lighter or which is the dominant population.
+  int   totalPx = static_cast<int>(cv::sum(hist)[0]);
+  float sumAll  = 0.0f;
+  for (int b = 0; b < 256; ++b) sumAll += static_cast<float>(b) * hist.at<float>(b);
+
+  float sumB = 0.0f, wB = 0.0f;
+  float maxVar = 0.0f;
+  int   otsuThresh = 0;
+  for (int b = 0; b < 256; ++b) {
+    wB += hist.at<float>(b);
+    float wF = static_cast<float>(totalPx) - wB;
+    if (wB == 0.0f || wF == 0.0f) continue;
+    sumB += static_cast<float>(b) * hist.at<float>(b);
+    float meanB = sumB / wB;
+    float meanF = (sumAll - sumB) / wF;
+    float var   = wB * wF * (meanB - meanF) * (meanB - meanF);
+    if (var > maxVar) { maxVar = var; otsuThresh = b; }
+  }
+
+  // Dominant backing-paper grey: most common intensity bin strictly below the
+  // Otsu threshold (the backing-paper class, not the white label class).
+  float bestBackingCount = 0.0f;
+  int   dominantGrey     = 128;
+  for (int b = 1; b < otsuThresh; ++b) {
+    if (hist.at<float>(b) > bestBackingCount) {
+      bestBackingCount = hist.at<float>(b);
+      dominantGrey     = b;
+    }
+  }
+
+  // The label is the class on the LIGHTER side of the Otsu threshold.
+  cv::Mat labelMask;
+  cv::threshold(paperGray, labelMask, otsuThresh, 255, cv::THRESH_BINARY);
+  labelMask.setTo(0, ~nonZeroMask); // exclude transparent pixels
+
+  cv::Mat k2 = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(21, 21));
+  cv::morphologyEx(labelMask, labelMask, cv::MORPH_CLOSE, k2);
+
+  cv::Mat labels2, stats2, centroids2;
+  int nLabels2 = cv::connectedComponentsWithStats(
+      labelMask, labels2, stats2, centroids2, 8, CV_32S);
+
+  if (nLabels2 <= 1) return image(paperRect).clone();
+
+  // Minimum area: 1 % of the backing-paper area.  This filters out small
+  // artefacts (clip fixtures, shadows, staple holes) that deviate from the
+  // backing-paper grey but are too small to be a real label region.
+  const int minLabelArea = std::max(1, paperRect.area() / 100);
+
+  // Take the UNION bounding box of all significant white components so that
+  // all label pieces (main label + smaller stub labels) are enclosed.
+  cv::Rect labelRect;
+  for (int i = 1; i < nLabels2; ++i) {
+    if (stats2.at<int>(i, cv::CC_STAT_AREA) < minLabelArea) continue;
+    cv::Rect r(stats2.at<int>(i, cv::CC_STAT_LEFT),
+               stats2.at<int>(i, cv::CC_STAT_TOP),
+               stats2.at<int>(i, cv::CC_STAT_WIDTH),
+               stats2.at<int>(i, cv::CC_STAT_HEIGHT));
+    labelRect = labelRect.empty() ? r : (labelRect | r);
+  }
+
+  labelRect &= cv::Rect(0, 0, paperRect.width, paperRect.height);
+  if (labelRect.empty()) return image(paperRect).clone();
+
+  // ── Step 2b: extend the bounding box upward to capture any grey tab/flap ──
+  // The Otsu pass above captures only the white (above-threshold) label body.
+  // A grey pull-tab or flap at the top may look similar to the backing paper
+  // and be missed.  We search the narrow strip above the current top of the
+  // label for any connected region whose intensity deviates from the dominant
+  // backing grey by more than diffThresh/2.  The search is intentionally
+  // restricted to this strip so that the deviation scan cannot pick up noise
+  // scattered across the full backing paper area.
+  if (labelRect.y > 0) {
+    // Constrain the strip horizontally to the existing label bounds.  The tab
+    // lies above the label and should be no wider than it; scanning the full
+    // backing-paper width would pick up edge shadows that widen the crop.
+    const cv::Rect stripROI(labelRect.x, 0, labelRect.width, labelRect.y);
+    cv::Mat stripGray = paperGray(stripROI);
+    cv::Mat stripNZ   = nonZeroMask(stripROI);
+
+    const int tabDevThresh = std::max(8, diffThresh / 2);
+    cv::Mat stripDev;
+    cv::absdiff(stripGray,
+                cv::Scalar(static_cast<uchar>(dominantGrey)), stripDev);
+    cv::threshold(stripDev, stripDev, tabDevThresh, 255, cv::THRESH_BINARY);
+    stripDev.setTo(0, ~stripNZ);
+
+    cv::Mat kTab = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(21, 21));
+    cv::morphologyEx(stripDev, stripDev, cv::MORPH_CLOSE, kTab);
+
+    cv::Mat sLabels, sStats, sCentroids;
+    int nS = cv::connectedComponentsWithStats(
+        stripDev, sLabels, sStats, sCentroids, 8, CV_32S);
+
+    // Use a lower area threshold than the main label (0.1 % of paper area)
+    // because the tab may cover less area than the full label body.
+    const int minTabArea = std::max(1, paperRect.area() / 1000);
+    for (int i = 1; i < nS; ++i) {
+      if (sStats.at<int>(i, cv::CC_STAT_AREA) < minTabArea) continue;
+      // Component coords are relative to stripROI; offset x back to paperGray.
+      cv::Rect r(sStats.at<int>(i, cv::CC_STAT_LEFT)  + stripROI.x,
+                 sStats.at<int>(i, cv::CC_STAT_TOP),
+                 sStats.at<int>(i, cv::CC_STAT_WIDTH),
+                 sStats.at<int>(i, cv::CC_STAT_HEIGHT));
+      labelRect = labelRect | r;
+    }
+    labelRect &= cv::Rect(0, 0, paperRect.width, paperRect.height);
+  }
+
+  return image(paperRect)(labelRect).clone();
+}
+
 void OCRAnalysis::setImage(const cv::Mat &image) {
   cv::Mat rgbImage;
 

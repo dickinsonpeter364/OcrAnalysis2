@@ -632,6 +632,38 @@ public:
                                 CleanupDiagnostics *diag = nullptr);
 
   /**
+   * @brief Crop an image to the label region by removing the surrounding dark
+   * background and the grey backing paper.
+   *
+   * Two-step algorithm:
+   *  1. Pixels with grayscale intensity below @p darkThresh are classified as
+   *     background.  A morphological close fills small holes, then the largest
+   *     connected component is chosen and its bounding rectangle used as the
+   *     "backing paper" crop.
+   *  2. When @p tightLabel is true, the dominant (most common) grey of the
+   *     backing paper is found via histogram analysis.  Any pixel that deviates
+   *     from that dominant grey by more than @p diffThresh intensity units is
+   *     classified as part of the label — regardless of whether it is lighter
+   *     or darker than the backing paper.  The union bounding rectangle of all
+   *     significant deviant regions is used as the tight label crop.
+   *
+   * @param image       Input image (any channel count, CV_8U depth).
+   * @param darkThresh  Intensity below which a pixel is considered dark
+   *                    background (default 50).
+   * @param diffThresh  Minimum deviation from the backing-paper dominant grey
+   *                    for a pixel to be counted as label content (default 40).
+   *                    Used only when @p tightLabel is true.
+   * @param tightLabel  When true (default), perform step 2 and crop to the
+   *                    label area within the backing paper.
+   * @return Cropped region with the same type as @p image, or an empty Mat
+   *         if no suitable region was found.
+   */
+  static cv::Mat cropToLabel(const cv::Mat &image,
+                             int  darkThresh  = 50,
+                             int  diffThresh  = 40,
+                             bool tightLabel  = true);
+
+  /**
    * @brief Structure to hold element position and size in relative coordinates
    *
    * All coordinates are fractions (0.0 to 1.0) relative to the calculated

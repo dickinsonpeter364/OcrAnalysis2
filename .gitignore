@@ -8,10 +8,7 @@ x64/
 *.dir/
 
 # Visual Studio files
-*.vcxproj
-*.vcxproj.filters
 *.vcxproj.user
-*.sln
 
 # IDE files
 .idea/

@@ -267,6 +267,16 @@ target_link_libraries(test_cleanup_image
         ocr_analysis
 )
 
+# Define the crop label test executable
+add_executable(test_crop_label
+    src/test_crop_label.cpp
+)
+
+target_link_libraries(test_crop_label
+    PRIVATE
+        ocr_analysis
+)
+
 # Optional: Install targets
 install(TARGETS ocr_analysis ocr_demo
     LIBRARY DESTINATION lib

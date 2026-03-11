@@ -1,0 +1,434 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <PreferredToolArchitecture>x64</PreferredToolArchitecture>
+  </PropertyGroup>
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="MinSizeRel|x64">
+      <Configuration>MinSizeRel</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="RelWithDebInfo|x64">
+      <Configuration>RelWithDebInfo</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{756618EE-CE0C-3569-ABDB-B5B8E378C5CC}</ProjectGuid>
+    <Keyword>Win32Proj</Keyword>
+    <VcpkgEnabled>false</VcpkgEnabled>
+    <WindowsTargetPlatformVersion>10.0.26100.0</WindowsTargetPlatformVersion>
+    <Platform>x64</Platform>
+    <ProjectName>ocr_demo</ProjectName>
+    <VCProjectUpgraderObjectName>NoUpgrade</VCProjectUpgraderObjectName>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <CharacterSet>MultiByte</CharacterSet>
+    <PlatformToolset>v143</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <CharacterSet>MultiByte</CharacterSet>
+    <PlatformToolset>v143</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <CharacterSet>MultiByte</CharacterSet>
+    <PlatformToolset>v143</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <CharacterSet>MultiByte</CharacterSet>
+    <PlatformToolset>v143</PlatformToolset>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings">
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets">
+    <Import Project="do_not_import_user.props" Condition="exists('do_not_import_user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup>
+    <_ProjectFileVersion>10.0.20506.1</_ProjectFileVersion>
+    <OutDir Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">C:\OcrAnalysis\Debug\</OutDir>
+    <IntDir Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">ocr_demo.dir\Debug\</IntDir>
+    <TargetName Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">ocr_demo</TargetName>
+    <TargetExt Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">.exe</TargetExt>
+    <LinkIncremental Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</LinkIncremental>
+    <GenerateManifest Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</GenerateManifest>
+    <OutDir Condition="'$(Configuration)|$(Platform)'=='Release|x64'">C:\OcrAnalysis\Release\</OutDir>
+    <IntDir Condition="'$(Configuration)|$(Platform)'=='Release|x64'">ocr_demo.dir\Release\</IntDir>
+    <TargetName Condition="'$(Configuration)|$(Platform)'=='Release|x64'">ocr_demo</TargetName>
+    <TargetExt Condition="'$(Configuration)|$(Platform)'=='Release|x64'">.exe</TargetExt>
+    <LinkIncremental Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</LinkIncremental>
+    <GenerateManifest Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</GenerateManifest>
+    <OutDir Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">C:\OcrAnalysis\MinSizeRel\</OutDir>
+    <IntDir Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">ocr_demo.dir\MinSizeRel\</IntDir>
+    <TargetName Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">ocr_demo</TargetName>
+    <TargetExt Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">.exe</TargetExt>
+    <LinkIncremental Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">false</LinkIncremental>
+    <GenerateManifest Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">true</GenerateManifest>
+    <OutDir Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">C:\OcrAnalysis\RelWithDebInfo\</OutDir>
+    <IntDir Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">ocr_demo.dir\RelWithDebInfo\</IntDir>
+    <TargetName Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">ocr_demo</TargetName>
+    <TargetExt Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">.exe</TargetExt>
+    <LinkIncremental Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">true</LinkIncremental>
+    <GenerateManifest Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">true</GenerateManifest>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <AdditionalIncludeDirectories>C:\OcrAnalysis\include;C:\vcpkg\installed\x64-windows\debug\..\include;C:\vcpkg\installed\x64-windows\debug\..\include\leptonica;C:\vcpkg\installed\x64-windows\debug\..\include\libpng16;C:\vcpkg\installed\x64-windows\debug\..\include\webp;C:\vcpkg\installed\x64-windows\debug\..\include\openjpeg-2.5;C:\vcpkg\installed\x64-windows\debug\..\include\poppler\cpp;C:\vcpkg\installed\x64-windows\debug\..\include\poppler;C:\vcpkg\installed\x64-windows\debug\..\include\cairo;C:\vcpkg\installed\x64-windows\debug\..\include\pixman-1;C:\zxing-cpp\core\src;C:\zxing-cpp\example;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalOptions>%(AdditionalOptions) /external:I "C:/vcpkg/installed/x64-windows/include/opencv4"</AdditionalOptions>
+      <AssemblerListingLocation>$(IntDir)</AssemblerListingLocation>
+      <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
+      <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
+      <ExceptionHandling>Sync</ExceptionHandling>
+      <ExternalWarningLevel>TurnOffAllWarnings</ExternalWarningLevel>
+      <ForceConformanceInForLoopScope></ForceConformanceInForLoopScope>
+      <InlineFunctionExpansion>Disabled</InlineFunctionExpansion>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <MinimalRebuild></MinimalRebuild>
+      <Optimization>Disabled</Optimization>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <RemoveUnreferencedCodeData></RemoveUnreferencedCodeData>
+      <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
+      <RuntimeTypeInfo>true</RuntimeTypeInfo>
+      <SupportJustMyCode></SupportJustMyCode>
+      <TreatWChar_tAsBuiltInType></TreatWChar_tAsBuiltInType>
+      <UseFullPaths>false</UseFullPaths>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;HAVE_CAIRO;HAVE_ZXING;CMAKE_INTDIR="Debug"</PreprocessorDefinitions>
+      <ObjectFileName>$(IntDir)</ObjectFileName>
+      <ScanSourceForModuleDependencies>false</ScanSourceForModuleDependencies>
+    </ClCompile>
+    <ResourceCompile>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_DEBUG;_WINDOWS;HAVE_CAIRO;HAVE_ZXING;CMAKE_INTDIR=\"Debug\"</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>C:\OcrAnalysis\include;C:\vcpkg\installed\x64-windows\debug\..\include;C:\vcpkg\installed\x64-windows\debug\..\include\leptonica;C:\vcpkg\installed\x64-windows\debug\..\include\libpng16;C:\vcpkg\installed\x64-windows\debug\..\include\webp;C:\vcpkg\installed\x64-windows\debug\..\include\openjpeg-2.5;C:\vcpkg\installed\x64-windows\debug\..\include\poppler\cpp;C:\vcpkg\installed\x64-windows\debug\..\include\poppler;C:\vcpkg\installed\x64-windows\debug\..\include\cairo;C:\vcpkg\installed\x64-windows\debug\..\include\pixman-1;C:\zxing-cpp\core\src;C:\zxing-cpp\example;C:\vcpkg\installed\x64-windows\include\opencv4;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ResourceCompile>
+    <Midl>
+      <AdditionalIncludeDirectories>C:\OcrAnalysis\include;C:\vcpkg\installed\x64-windows\debug\..\include;C:\vcpkg\installed\x64-windows\debug\..\include\leptonica;C:\vcpkg\installed\x64-windows\debug\..\include\libpng16;C:\vcpkg\installed\x64-windows\debug\..\include\webp;C:\vcpkg\installed\x64-windows\debug\..\include\openjpeg-2.5;C:\vcpkg\installed\x64-windows\debug\..\include\poppler\cpp;C:\vcpkg\installed\x64-windows\debug\..\include\poppler;C:\vcpkg\installed\x64-windows\debug\..\include\cairo;C:\vcpkg\installed\x64-windows\debug\..\include\pixman-1;C:\zxing-cpp\core\src;C:\zxing-cpp\example;C:\vcpkg\installed\x64-windows\include\opencv4;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
+      <HeaderFileName>%(Filename).h</HeaderFileName>
+      <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
+      <InterfaceIdentifierFileName>%(Filename)_i.c</InterfaceIdentifierFileName>
+      <ProxyFileName>%(Filename)_p.c</ProxyFileName>
+    </Midl>
+    <PostBuildEvent>
+      <Message></Message>
+      <Command>setlocal
+C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -noprofile -executionpolicy Bypass -file C:/vcpkg/scripts/buildsystems/msbuild/applocal.ps1 -targetBinary C:/OcrAnalysis/Debug/ocr_demo.exe -installedDir C:/vcpkg/installed/x64-windows/debug/bin -OutVariable out
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+    </PostBuildEvent>
+    <Link>
+      <AdditionalDependencies>Debug\ocr_analysis.lib;C:\vcpkg\installed\x64-windows\debug\lib\opencv_world4d.lib;C:\vcpkg\installed\x64-windows\debug\lib\opencv_world4d.lib;C:\vcpkg\installed\x64-windows\debug\lib\opencv_world4d.lib;C:\vcpkg\installed\x64-windows\debug\lib\opencv_world4d.lib;C:\vcpkg\installed\x64-windows\debug\lib\opencv_world4d.lib;C:\vcpkg\installed\x64-windows\debug\lib\opencv_world4d.lib;C:\vcpkg\installed\x64-windows\debug\lib\opencv_world4d.lib;C:\vcpkg\installed\x64-windows\debug\lib\opencv_world4d.lib;C:\vcpkg\installed\x64-windows\debug\lib\opencv_world4d.lib;C:\vcpkg\installed\x64-windows\debug\lib\opencv_world4d.lib;C:\vcpkg\installed\x64-windows\debug\lib\opencv_world4d.lib;C:\vcpkg\installed\x64-windows\debug\lib\opencv_world4d.lib;C:\vcpkg\installed\x64-windows\debug\lib\opencv_world4d.lib;C:\vcpkg\installed\x64-windows\debug\lib\opencv_world4d.lib;C:\vcpkg\installed\x64-windows\debug\lib\opencv_world4d.lib;tesseract55d.lib;leptonica-1.85.0d.lib;poppler-cpp.lib;poppler.lib;cairo.lib;C:\zxing-cpp\build\core\Debug\ZXing.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;comdlg32.lib;advapi32.lib</AdditionalDependencies>
+      <AdditionalLibraryDirectories>C:/vcpkg/installed/x64-windows/debug/lib;C:/vcpkg/installed/x64-windows/debug/lib/$(Configuration);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalOptions>%(AdditionalOptions) /machine:x64</AdditionalOptions>
+      <DataExecutionPrevention></DataExecutionPrevention>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <IgnoreSpecificDefaultLibraries>%(IgnoreSpecificDefaultLibraries)</IgnoreSpecificDefaultLibraries>
+      <ImageHasSafeExceptionHandlers></ImageHasSafeExceptionHandlers>
+      <ImportLibrary>C:/OcrAnalysis/Debug/ocr_demo.lib</ImportLibrary>
+      <LinkErrorReporting></LinkErrorReporting>
+      <ProgramDataBaseFile>C:/OcrAnalysis/Debug/ocr_demo.pdb</ProgramDataBaseFile>
+      <RandomizedBaseAddress></RandomizedBaseAddress>
+      <SubSystem>Console</SubSystem>
+    </Link>
+    <ProjectReference>
+      <LinkLibraryDependencies>false</LinkLibraryDependencies>
+    </ProjectReference>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <AdditionalIncludeDirectories>C:\OcrAnalysis\include;C:\vcpkg\installed\x64-windows\debug\..\include;C:\vcpkg\installed\x64-windows\debug\..\include\leptonica;C:\vcpkg\installed\x64-windows\debug\..\include\libpng16;C:\vcpkg\installed\x64-windows\debug\..\include\webp;C:\vcpkg\installed\x64-windows\debug\..\include\openjpeg-2.5;C:\vcpkg\installed\x64-windows\debug\..\include\poppler\cpp;C:\vcpkg\installed\x64-windows\debug\..\include\poppler;C:\vcpkg\installed\x64-windows\debug\..\include\cairo;C:\vcpkg\installed\x64-windows\debug\..\include\pixman-1;C:\zxing-cpp\core\src;C:\zxing-cpp\example;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalOptions>%(AdditionalOptions) /external:I "C:/vcpkg/installed/x64-windows/include/opencv4"</AdditionalOptions>
+      <AssemblerListingLocation>$(IntDir)</AssemblerListingLocation>
+      <BasicRuntimeChecks>Default</BasicRuntimeChecks>
+      <ExceptionHandling>Sync</ExceptionHandling>
+      <ExternalWarningLevel>TurnOffAllWarnings</ExternalWarningLevel>
+      <ForceConformanceInForLoopScope></ForceConformanceInForLoopScope>
+      <InlineFunctionExpansion>AnySuitable</InlineFunctionExpansion>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <MinimalRebuild></MinimalRebuild>
+      <Optimization>MaxSpeed</Optimization>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <RemoveUnreferencedCodeData></RemoveUnreferencedCodeData>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <RuntimeTypeInfo>true</RuntimeTypeInfo>
+      <SupportJustMyCode></SupportJustMyCode>
+      <TreatWChar_tAsBuiltInType></TreatWChar_tAsBuiltInType>
+      <UseFullPaths>false</UseFullPaths>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;HAVE_CAIRO;HAVE_ZXING;CMAKE_INTDIR="Release"</PreprocessorDefinitions>
+      <ObjectFileName>$(IntDir)</ObjectFileName>
+      <DebugInformationFormat>
+      </DebugInformationFormat>
+      <ScanSourceForModuleDependencies>false</ScanSourceForModuleDependencies>
+    </ClCompile>
+    <ResourceCompile>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;HAVE_CAIRO;HAVE_ZXING;CMAKE_INTDIR=\"Release\"</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>C:\OcrAnalysis\include;C:\vcpkg\installed\x64-windows\debug\..\include;C:\vcpkg\installed\x64-windows\debug\..\include\leptonica;C:\vcpkg\installed\x64-windows\debug\..\include\libpng16;C:\vcpkg\installed\x64-windows\debug\..\include\webp;C:\vcpkg\installed\x64-windows\debug\..\include\openjpeg-2.5;C:\vcpkg\installed\x64-windows\debug\..\include\poppler\cpp;C:\vcpkg\installed\x64-windows\debug\..\include\poppler;C:\vcpkg\installed\x64-windows\debug\..\include\cairo;C:\vcpkg\installed\x64-windows\debug\..\include\pixman-1;C:\zxing-cpp\core\src;C:\zxing-cpp\example;C:\vcpkg\installed\x64-windows\include\opencv4;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ResourceCompile>
+    <Midl>
+      <AdditionalIncludeDirectories>C:\OcrAnalysis\include;C:\vcpkg\installed\x64-windows\debug\..\include;C:\vcpkg\installed\x64-windows\debug\..\include\leptonica;C:\vcpkg\installed\x64-windows\debug\..\include\libpng16;C:\vcpkg\installed\x64-windows\debug\..\include\webp;C:\vcpkg\installed\x64-windows\debug\..\include\openjpeg-2.5;C:\vcpkg\installed\x64-windows\debug\..\include\poppler\cpp;C:\vcpkg\installed\x64-windows\debug\..\include\poppler;C:\vcpkg\installed\x64-windows\debug\..\include\cairo;C:\vcpkg\installed\x64-windows\debug\..\include\pixman-1;C:\zxing-cpp\core\src;C:\zxing-cpp\example;C:\vcpkg\installed\x64-windows\include\opencv4;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
+      <HeaderFileName>%(Filename).h</HeaderFileName>
+      <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
+      <InterfaceIdentifierFileName>%(Filename)_i.c</InterfaceIdentifierFileName>
+      <ProxyFileName>%(Filename)_p.c</ProxyFileName>
+    </Midl>
+    <PostBuildEvent>
+      <Message></Message>
+      <Command>setlocal
+C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -noprofile -executionpolicy Bypass -file C:/vcpkg/scripts/buildsystems/msbuild/applocal.ps1 -targetBinary C:/OcrAnalysis/Release/ocr_demo.exe -installedDir C:/vcpkg/installed/x64-windows/bin -OutVariable out
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+    </PostBuildEvent>
+    <Link>
+      <AdditionalDependencies>Release\ocr_analysis.lib;C:\vcpkg\installed\x64-windows\lib\opencv_world4.lib;C:\vcpkg\installed\x64-windows\lib\opencv_world4.lib;C:\vcpkg\installed\x64-windows\lib\opencv_world4.lib;C:\vcpkg\installed\x64-windows\lib\opencv_world4.lib;C:\vcpkg\installed\x64-windows\lib\opencv_world4.lib;C:\vcpkg\installed\x64-windows\lib\opencv_world4.lib;C:\vcpkg\installed\x64-windows\lib\opencv_world4.lib;C:\vcpkg\installed\x64-windows\lib\opencv_world4.lib;C:\vcpkg\installed\x64-windows\lib\opencv_world4.lib;C:\vcpkg\installed\x64-windows\lib\opencv_world4.lib;C:\vcpkg\installed\x64-windows\lib\opencv_world4.lib;C:\vcpkg\installed\x64-windows\lib\opencv_world4.lib;C:\vcpkg\installed\x64-windows\lib\opencv_world4.lib;C:\vcpkg\installed\x64-windows\lib\opencv_world4.lib;C:\vcpkg\installed\x64-windows\lib\opencv_world4.lib;tesseract55d.lib;leptonica-1.85.0d.lib;poppler-cpp.lib;poppler.lib;cairo.lib;C:\zxing-cpp\build\core\Debug\ZXing.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;comdlg32.lib;advapi32.lib</AdditionalDependencies>
+      <AdditionalLibraryDirectories>C:/vcpkg/installed/x64-windows/debug/lib;C:/vcpkg/installed/x64-windows/debug/lib/$(Configuration);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalOptions>%(AdditionalOptions) /machine:x64</AdditionalOptions>
+      <DataExecutionPrevention></DataExecutionPrevention>
+      <GenerateDebugInformation>false</GenerateDebugInformation>
+      <IgnoreSpecificDefaultLibraries>%(IgnoreSpecificDefaultLibraries)</IgnoreSpecificDefaultLibraries>
+      <ImageHasSafeExceptionHandlers></ImageHasSafeExceptionHandlers>
+      <ImportLibrary>C:/OcrAnalysis/Release/ocr_demo.lib</ImportLibrary>
+      <LinkErrorReporting></LinkErrorReporting>
+      <ProgramDataBaseFile>C:/OcrAnalysis/Release/ocr_demo.pdb</ProgramDataBaseFile>
+      <RandomizedBaseAddress></RandomizedBaseAddress>
+      <SubSystem>Console</SubSystem>
+    </Link>
+    <ProjectReference>
+      <LinkLibraryDependencies>false</LinkLibraryDependencies>
+    </ProjectReference>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">
+    <ClCompile>
+      <AdditionalIncludeDirectories>C:\OcrAnalysis\include;C:\vcpkg\installed\x64-windows\debug\..\include;C:\vcpkg\installed\x64-windows\debug\..\include\leptonica;C:\vcpkg\installed\x64-windows\debug\..\include\libpng16;C:\vcpkg\installed\x64-windows\debug\..\include\webp;C:\vcpkg\installed\x64-windows\debug\..\include\openjpeg-2.5;C:\vcpkg\installed\x64-windows\debug\..\include\poppler\cpp;C:\vcpkg\installed\x64-windows\debug\..\include\poppler;C:\vcpkg\installed\x64-windows\debug\..\include\cairo;C:\vcpkg\installed\x64-windows\debug\..\include\pixman-1;C:\zxing-cpp\core\src;C:\zxing-cpp\example;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalOptions>%(AdditionalOptions) /external:I "C:/vcpkg/installed/x64-windows/include/opencv4"</AdditionalOptions>
+      <AssemblerListingLocation>$(IntDir)</AssemblerListingLocation>
+      <BasicRuntimeChecks>Default</BasicRuntimeChecks>
+      <ExceptionHandling>Sync</ExceptionHandling>
+      <ExternalWarningLevel>TurnOffAllWarnings</ExternalWarningLevel>
+      <ForceConformanceInForLoopScope></ForceConformanceInForLoopScope>
+      <InlineFunctionExpansion>OnlyExplicitInline</InlineFunctionExpansion>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <MinimalRebuild></MinimalRebuild>
+      <Optimization>MinSpace</Optimization>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <RemoveUnreferencedCodeData></RemoveUnreferencedCodeData>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <RuntimeTypeInfo>true</RuntimeTypeInfo>
+      <SupportJustMyCode></SupportJustMyCode>
+      <TreatWChar_tAsBuiltInType></TreatWChar_tAsBuiltInType>
+      <UseFullPaths>false</UseFullPaths>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;HAVE_CAIRO;HAVE_ZXING;CMAKE_INTDIR="MinSizeRel"</PreprocessorDefinitions>
+      <ObjectFileName>$(IntDir)</ObjectFileName>
+      <DebugInformationFormat>
+      </DebugInformationFormat>
+      <ScanSourceForModuleDependencies>false</ScanSourceForModuleDependencies>
+    </ClCompile>
+    <ResourceCompile>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;HAVE_CAIRO;HAVE_ZXING;CMAKE_INTDIR=\"MinSizeRel\"</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>C:\OcrAnalysis\include;C:\vcpkg\installed\x64-windows\debug\..\include;C:\vcpkg\installed\x64-windows\debug\..\include\leptonica;C:\vcpkg\installed\x64-windows\debug\..\include\libpng16;C:\vcpkg\installed\x64-windows\debug\..\include\webp;C:\vcpkg\installed\x64-windows\debug\..\include\openjpeg-2.5;C:\vcpkg\installed\x64-windows\debug\..\include\poppler\cpp;C:\vcpkg\installed\x64-windows\debug\..\include\poppler;C:\vcpkg\installed\x64-windows\debug\..\include\cairo;C:\vcpkg\installed\x64-windows\debug\..\include\pixman-1;C:\zxing-cpp\core\src;C:\zxing-cpp\example;C:\vcpkg\installed\x64-windows\include\opencv4;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ResourceCompile>
+    <Midl>
+      <AdditionalIncludeDirectories>C:\OcrAnalysis\include;C:\vcpkg\installed\x64-windows\debug\..\include;C:\vcpkg\installed\x64-windows\debug\..\include\leptonica;C:\vcpkg\installed\x64-windows\debug\..\include\libpng16;C:\vcpkg\installed\x64-windows\debug\..\include\webp;C:\vcpkg\installed\x64-windows\debug\..\include\openjpeg-2.5;C:\vcpkg\installed\x64-windows\debug\..\include\poppler\cpp;C:\vcpkg\installed\x64-windows\debug\..\include\poppler;C:\vcpkg\installed\x64-windows\debug\..\include\cairo;C:\vcpkg\installed\x64-windows\debug\..\include\pixman-1;C:\zxing-cpp\core\src;C:\zxing-cpp\example;C:\vcpkg\installed\x64-windows\include\opencv4;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
+      <HeaderFileName>%(Filename).h</HeaderFileName>
+      <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
+      <InterfaceIdentifierFileName>%(Filename)_i.c</InterfaceIdentifierFileName>
+      <ProxyFileName>%(Filename)_p.c</ProxyFileName>
+    </Midl>
+    <PostBuildEvent>
+      <Message></Message>
+      <Command>setlocal
+C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -noprofile -executionpolicy Bypass -file C:/vcpkg/scripts/buildsystems/msbuild/applocal.ps1 -targetBinary C:/OcrAnalysis/MinSizeRel/ocr_demo.exe -installedDir C:/vcpkg/installed/x64-windows/bin -OutVariable out
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+    </PostBuildEvent>
+    <Link>
+      <AdditionalDependencies>MinSizeRel\ocr_analysis.lib;C:\vcpkg\installed\x64-windows\lib\opencv_world4.lib;C:\vcpkg\installed\x64-windows\lib\opencv_world4.lib;C:\vcpkg\installed\x64-windows\lib\opencv_world4.lib;C:\vcpkg\installed\x64-windows\lib\opencv_world4.lib;C:\vcpkg\installed\x64-windows\lib\opencv_world4.lib;C:\vcpkg\installed\x64-windows\lib\opencv_world4.lib;C:\vcpkg\installed\x64-windows\lib\opencv_world4.lib;C:\vcpkg\installed\x64-windows\lib\opencv_world4.lib;C:\vcpkg\installed\x64-windows\lib\opencv_world4.lib;C:\vcpkg\installed\x64-windows\lib\opencv_world4.lib;C:\vcpkg\installed\x64-windows\lib\opencv_world4.lib;C:\vcpkg\installed\x64-windows\lib\opencv_world4.lib;C:\vcpkg\installed\x64-windows\lib\opencv_world4.lib;C:\vcpkg\installed\x64-windows\lib\opencv_world4.lib;C:\vcpkg\installed\x64-windows\lib\opencv_world4.lib;tesseract55d.lib;leptonica-1.85.0d.lib;poppler-cpp.lib;poppler.lib;cairo.lib;C:\zxing-cpp\build\core\Debug\ZXing.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;comdlg32.lib;advapi32.lib</AdditionalDependencies>
+      <AdditionalLibraryDirectories>C:/vcpkg/installed/x64-windows/debug/lib;C:/vcpkg/installed/x64-windows/debug/lib/$(Configuration);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalOptions>%(AdditionalOptions) /machine:x64</AdditionalOptions>
+      <DataExecutionPrevention></DataExecutionPrevention>
+      <GenerateDebugInformation>false</GenerateDebugInformation>
+      <IgnoreSpecificDefaultLibraries>%(IgnoreSpecificDefaultLibraries)</IgnoreSpecificDefaultLibraries>
+      <ImageHasSafeExceptionHandlers></ImageHasSafeExceptionHandlers>
+      <ImportLibrary>C:/OcrAnalysis/MinSizeRel/ocr_demo.lib</ImportLibrary>
+      <LinkErrorReporting></LinkErrorReporting>
+      <ProgramDataBaseFile>C:/OcrAnalysis/MinSizeRel/ocr_demo.pdb</ProgramDataBaseFile>
+      <RandomizedBaseAddress></RandomizedBaseAddress>
+      <SubSystem>Console</SubSystem>
+    </Link>
+    <ProjectReference>
+      <LinkLibraryDependencies>false</LinkLibraryDependencies>
+    </ProjectReference>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">
+    <ClCompile>
+      <AdditionalIncludeDirectories>C:\OcrAnalysis\include;C:\vcpkg\installed\x64-windows\debug\..\include;C:\vcpkg\installed\x64-windows\debug\..\include\leptonica;C:\vcpkg\installed\x64-windows\debug\..\include\libpng16;C:\vcpkg\installed\x64-windows\debug\..\include\webp;C:\vcpkg\installed\x64-windows\debug\..\include\openjpeg-2.5;C:\vcpkg\installed\x64-windows\debug\..\include\poppler\cpp;C:\vcpkg\installed\x64-windows\debug\..\include\poppler;C:\vcpkg\installed\x64-windows\debug\..\include\cairo;C:\vcpkg\installed\x64-windows\debug\..\include\pixman-1;C:\zxing-cpp\core\src;C:\zxing-cpp\example;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalOptions>%(AdditionalOptions) /external:I "C:/vcpkg/installed/x64-windows/include/opencv4"</AdditionalOptions>
+      <AssemblerListingLocation>$(IntDir)</AssemblerListingLocation>
+      <BasicRuntimeChecks>Default</BasicRuntimeChecks>
+      <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
+      <ExceptionHandling>Sync</ExceptionHandling>
+      <ExternalWarningLevel>TurnOffAllWarnings</ExternalWarningLevel>
+      <ForceConformanceInForLoopScope></ForceConformanceInForLoopScope>
+      <InlineFunctionExpansion>OnlyExplicitInline</InlineFunctionExpansion>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <MinimalRebuild></MinimalRebuild>
+      <Optimization>MaxSpeed</Optimization>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <RemoveUnreferencedCodeData></RemoveUnreferencedCodeData>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <RuntimeTypeInfo>true</RuntimeTypeInfo>
+      <SupportJustMyCode></SupportJustMyCode>
+      <TreatWChar_tAsBuiltInType></TreatWChar_tAsBuiltInType>
+      <UseFullPaths>false</UseFullPaths>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;HAVE_CAIRO;HAVE_ZXING;CMAKE_INTDIR="RelWithDebInfo"</PreprocessorDefinitions>
+      <ObjectFileName>$(IntDir)</ObjectFileName>
+      <ScanSourceForModuleDependencies>false</ScanSourceForModuleDependencies>
+    </ClCompile>
+    <ResourceCompile>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;HAVE_CAIRO;HAVE_ZXING;CMAKE_INTDIR=\"RelWithDebInfo\"</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>C:\OcrAnalysis\include;C:\vcpkg\installed\x64-windows\debug\..\include;C:\vcpkg\installed\x64-windows\debug\..\include\leptonica;C:\vcpkg\installed\x64-windows\debug\..\include\libpng16;C:\vcpkg\installed\x64-windows\debug\..\include\webp;C:\vcpkg\installed\x64-windows\debug\..\include\openjpeg-2.5;C:\vcpkg\installed\x64-windows\debug\..\include\poppler\cpp;C:\vcpkg\installed\x64-windows\debug\..\include\poppler;C:\vcpkg\installed\x64-windows\debug\..\include\cairo;C:\vcpkg\installed\x64-windows\debug\..\include\pixman-1;C:\zxing-cpp\core\src;C:\zxing-cpp\example;C:\vcpkg\installed\x64-windows\include\opencv4;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ResourceCompile>
+    <Midl>
+      <AdditionalIncludeDirectories>C:\OcrAnalysis\include;C:\vcpkg\installed\x64-windows\debug\..\include;C:\vcpkg\installed\x64-windows\debug\..\include\leptonica;C:\vcpkg\installed\x64-windows\debug\..\include\libpng16;C:\vcpkg\installed\x64-windows\debug\..\include\webp;C:\vcpkg\installed\x64-windows\debug\..\include\openjpeg-2.5;C:\vcpkg\installed\x64-windows\debug\..\include\poppler\cpp;C:\vcpkg\installed\x64-windows\debug\..\include\poppler;C:\vcpkg\installed\x64-windows\debug\..\include\cairo;C:\vcpkg\installed\x64-windows\debug\..\include\pixman-1;C:\zxing-cpp\core\src;C:\zxing-cpp\example;C:\vcpkg\installed\x64-windows\include\opencv4;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
+      <HeaderFileName>%(Filename).h</HeaderFileName>
+      <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
+      <InterfaceIdentifierFileName>%(Filename)_i.c</InterfaceIdentifierFileName>
+      <ProxyFileName>%(Filename)_p.c</ProxyFileName>
+    </Midl>
+    <PostBuildEvent>
+      <Message></Message>
+      <Command>setlocal
+C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -noprofile -executionpolicy Bypass -file C:/vcpkg/scripts/buildsystems/msbuild/applocal.ps1 -targetBinary C:/OcrAnalysis/RelWithDebInfo/ocr_demo.exe -installedDir C:/vcpkg/installed/x64-windows/bin -OutVariable out
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+    </PostBuildEvent>
+    <Link>
+      <AdditionalDependencies>RelWithDebInfo\ocr_analysis.lib;C:\vcpkg\installed\x64-windows\lib\opencv_world4.lib;C:\vcpkg\installed\x64-windows\lib\opencv_world4.lib;C:\vcpkg\installed\x64-windows\lib\opencv_world4.lib;C:\vcpkg\installed\x64-windows\lib\opencv_world4.lib;C:\vcpkg\installed\x64-windows\lib\opencv_world4.lib;C:\vcpkg\installed\x64-windows\lib\opencv_world4.lib;C:\vcpkg\installed\x64-windows\lib\opencv_world4.lib;C:\vcpkg\installed\x64-windows\lib\opencv_world4.lib;C:\vcpkg\installed\x64-windows\lib\opencv_world4.lib;C:\vcpkg\installed\x64-windows\lib\opencv_world4.lib;C:\vcpkg\installed\x64-windows\lib\opencv_world4.lib;C:\vcpkg\installed\x64-windows\lib\opencv_world4.lib;C:\vcpkg\installed\x64-windows\lib\opencv_world4.lib;C:\vcpkg\installed\x64-windows\lib\opencv_world4.lib;C:\vcpkg\installed\x64-windows\lib\opencv_world4.lib;tesseract55d.lib;leptonica-1.85.0d.lib;poppler-cpp.lib;poppler.lib;cairo.lib;C:\zxing-cpp\build\core\Debug\ZXing.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;comdlg32.lib;advapi32.lib</AdditionalDependencies>
+      <AdditionalLibraryDirectories>C:/vcpkg/installed/x64-windows/debug/lib;C:/vcpkg/installed/x64-windows/debug/lib/$(Configuration);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalOptions>%(AdditionalOptions) /machine:x64</AdditionalOptions>
+      <DataExecutionPrevention></DataExecutionPrevention>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <IgnoreSpecificDefaultLibraries>%(IgnoreSpecificDefaultLibraries)</IgnoreSpecificDefaultLibraries>
+      <ImageHasSafeExceptionHandlers></ImageHasSafeExceptionHandlers>
+      <ImportLibrary>C:/OcrAnalysis/RelWithDebInfo/ocr_demo.lib</ImportLibrary>
+      <LinkErrorReporting></LinkErrorReporting>
+      <ProgramDataBaseFile>C:/OcrAnalysis/RelWithDebInfo/ocr_demo.pdb</ProgramDataBaseFile>
+      <RandomizedBaseAddress></RandomizedBaseAddress>
+      <SubSystem>Console</SubSystem>
+    </Link>
+    <ProjectReference>
+      <LinkLibraryDependencies>false</LinkLibraryDependencies>
+    </ProjectReference>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <CustomBuild Include="C:\OcrAnalysis\CMakeLists.txt">
+      <UseUtf8Encoding>Always</UseUtf8Encoding>
+      <Message Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Building Custom Rule C:/OcrAnalysis/CMakeLists.txt</Message>
+      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SC:/OcrAnalysis -BC:/OcrAnalysis --check-stamp-file C:/OcrAnalysis/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+      <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">C:\OcrAnalysis\CMakeFiles\4.1.1\CMakeCXXCompiler.cmake;C:\OcrAnalysis\CMakeFiles\4.1.1\CMakeRCCompiler.cmake;C:\OcrAnalysis\CMakeFiles\4.1.1\CMakeSystem.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CMakeCXXInformation.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CMakeCommonLanguageInclude.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CMakeDependentOption.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CMakeFindDependencyMacro.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CMakeGenericSystem.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CMakeInitializeConfigs.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CMakeLanguageInformation.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CMakeRCInformation.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CMakeSystemSpecificInformation.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CMakeSystemSpecificInitialize.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckCXXSourceCompiles.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckIncludeFileCXX.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckLibraryExists.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\Compiler\CMakeCommonCompilerMacros.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\Compiler\MSVC-CXX.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\Compiler\MSVC.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\FindPackageHandleStandardArgs.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\FindPackageMessage.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\FindPkgConfig.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\FindTIFF.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\FindThreads.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\Internal\CMakeCXXLinkerInformation.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\Internal\CMakeCommonLinkerInformation.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\Internal\CheckSourceCompiles.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\Linker\MSVC-CXX.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\Linker\MSVC.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\Platform\Linker\Windows-MSVC-CXX.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\Platform\Linker\Windows-MSVC.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\Platform\Windows-Initialize.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\Platform\Windows-MSVC-CXX.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\Platform\Windows-MSVC.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\Platform\Windows.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\Platform\WindowsPaths.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\SelectLibraryConfigurations.cmake;C:\vcpkg\installed\x64-windows\share\absl\abslConfig.cmake;C:\vcpkg\installed\x64-windows\share\absl\abslConfigVersion.cmake;C:\vcpkg\installed\x64-windows\share\absl\abslTargets-debug.cmake;C:\vcpkg\installed\x64-windows\share\absl\abslTargets-release.cmake;C:\vcpkg\installed\x64-windows\share\absl\abslTargets.cmake;C:\vcpkg\installed\x64-windows\share\opencv\vcpkg-cmake-wrapper.cmake;C:\vcpkg\installed\x64-windows\share\opencv4\OpenCVConfig-version.cmake;C:\vcpkg\installed\x64-windows\share\opencv4\OpenCVConfig.cmake;C:\vcpkg\installed\x64-windows\share\opencv4\OpenCVModules-debug.cmake;C:\vcpkg\installed\x64-windows\share\opencv4\OpenCVModules-release.cmake;C:\vcpkg\installed\x64-windows\share\opencv4\OpenCVModules.cmake;C:\vcpkg\installed\x64-windows\share\protobuf\protobuf-config-version.cmake;C:\vcpkg\installed\x64-windows\share\protobuf\protobuf-config.cmake;C:\vcpkg\installed\x64-windows\share\protobuf\protobuf-generate.cmake;C:\vcpkg\installed\x64-windows\share\protobuf\protobuf-module.cmake;C:\vcpkg\installed\x64-windows\share\protobuf\protobuf-options.cmake;C:\vcpkg\installed\x64-windows\share\protobuf\protobuf-targets-debug.cmake;C:\vcpkg\installed\x64-windows\share\protobuf\protobuf-targets-release.cmake;C:\vcpkg\installed\x64-windows\share\protobuf\protobuf-targets.cmake;C:\vcpkg\installed\x64-windows\share\protobuf\vcpkg-cmake-wrapper.cmake;C:\vcpkg\installed\x64-windows\share\quirc\quirc-config-debug.cmake;C:\vcpkg\installed\x64-windows\share\quirc\quirc-config-release.cmake;C:\vcpkg\installed\x64-windows\share\quirc\quirc-config.cmake;C:\vcpkg\installed\x64-windows\share\tiff\vcpkg-cmake-wrapper.cmake;C:\vcpkg\installed\x64-windows\share\utf8_range\utf8_range-config.cmake;C:\vcpkg\installed\x64-windows\share\utf8_range\utf8_range-targets-debug.cmake;C:\vcpkg\installed\x64-windows\share\utf8_range\utf8_range-targets-release.cmake;C:\vcpkg\installed\x64-windows\share\utf8_range\utf8_range-targets.cmake;C:\vcpkg\scripts\buildsystems\vcpkg.cmake;%(AdditionalInputs)</AdditionalInputs>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">C:\OcrAnalysis\CMakeFiles\generate.stamp</Outputs>
+      <LinkObjects Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">false</LinkObjects>
+      <Message Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Building Custom Rule C:/OcrAnalysis/CMakeLists.txt</Message>
+      <Command Condition="'$(Configuration)|$(Platform)'=='Release|x64'">setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SC:/OcrAnalysis -BC:/OcrAnalysis --check-stamp-file C:/OcrAnalysis/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+      <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='Release|x64'">C:\OcrAnalysis\CMakeFiles\4.1.1\CMakeCXXCompiler.cmake;C:\OcrAnalysis\CMakeFiles\4.1.1\CMakeRCCompiler.cmake;C:\OcrAnalysis\CMakeFiles\4.1.1\CMakeSystem.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CMakeCXXInformation.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CMakeCommonLanguageInclude.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CMakeDependentOption.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CMakeFindDependencyMacro.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CMakeGenericSystem.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CMakeInitializeConfigs.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CMakeLanguageInformation.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CMakeRCInformation.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CMakeSystemSpecificInformation.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CMakeSystemSpecificInitialize.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckCXXSourceCompiles.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckIncludeFileCXX.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckLibraryExists.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\Compiler\CMakeCommonCompilerMacros.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\Compiler\MSVC-CXX.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\Compiler\MSVC.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\FindPackageHandleStandardArgs.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\FindPackageMessage.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\FindPkgConfig.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\FindTIFF.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\FindThreads.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\Internal\CMakeCXXLinkerInformation.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\Internal\CMakeCommonLinkerInformation.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\Internal\CheckSourceCompiles.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\Linker\MSVC-CXX.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\Linker\MSVC.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\Platform\Linker\Windows-MSVC-CXX.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\Platform\Linker\Windows-MSVC.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\Platform\Windows-Initialize.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\Platform\Windows-MSVC-CXX.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\Platform\Windows-MSVC.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\Platform\Windows.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\Platform\WindowsPaths.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\SelectLibraryConfigurations.cmake;C:\vcpkg\installed\x64-windows\share\absl\abslConfig.cmake;C:\vcpkg\installed\x64-windows\share\absl\abslConfigVersion.cmake;C:\vcpkg\installed\x64-windows\share\absl\abslTargets-debug.cmake;C:\vcpkg\installed\x64-windows\share\absl\abslTargets-release.cmake;C:\vcpkg\installed\x64-windows\share\absl\abslTargets.cmake;C:\vcpkg\installed\x64-windows\share\opencv\vcpkg-cmake-wrapper.cmake;C:\vcpkg\installed\x64-windows\share\opencv4\OpenCVConfig-version.cmake;C:\vcpkg\installed\x64-windows\share\opencv4\OpenCVConfig.cmake;C:\vcpkg\installed\x64-windows\share\opencv4\OpenCVModules-debug.cmake;C:\vcpkg\installed\x64-windows\share\opencv4\OpenCVModules-release.cmake;C:\vcpkg\installed\x64-windows\share\opencv4\OpenCVModules.cmake;C:\vcpkg\installed\x64-windows\share\protobuf\protobuf-config-version.cmake;C:\vcpkg\installed\x64-windows\share\protobuf\protobuf-config.cmake;C:\vcpkg\installed\x64-windows\share\protobuf\protobuf-generate.cmake;C:\vcpkg\installed\x64-windows\share\protobuf\protobuf-module.cmake;C:\vcpkg\installed\x64-windows\share\protobuf\protobuf-options.cmake;C:\vcpkg\installed\x64-windows\share\protobuf\protobuf-targets-debug.cmake;C:\vcpkg\installed\x64-windows\share\protobuf\protobuf-targets-release.cmake;C:\vcpkg\installed\x64-windows\share\protobuf\protobuf-targets.cmake;C:\vcpkg\installed\x64-windows\share\protobuf\vcpkg-cmake-wrapper.cmake;C:\vcpkg\installed\x64-windows\share\quirc\quirc-config-debug.cmake;C:\vcpkg\installed\x64-windows\share\quirc\quirc-config-release.cmake;C:\vcpkg\installed\x64-windows\share\quirc\quirc-config.cmake;C:\vcpkg\installed\x64-windows\share\tiff\vcpkg-cmake-wrapper.cmake;C:\vcpkg\installed\x64-windows\share\utf8_range\utf8_range-config.cmake;C:\vcpkg\installed\x64-windows\share\utf8_range\utf8_range-targets-debug.cmake;C:\vcpkg\installed\x64-windows\share\utf8_range\utf8_range-targets-release.cmake;C:\vcpkg\installed\x64-windows\share\utf8_range\utf8_range-targets.cmake;C:\vcpkg\scripts\buildsystems\vcpkg.cmake;%(AdditionalInputs)</AdditionalInputs>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='Release|x64'">C:\OcrAnalysis\CMakeFiles\generate.stamp</Outputs>
+      <LinkObjects Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</LinkObjects>
+      <Message Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">Building Custom Rule C:/OcrAnalysis/CMakeLists.txt</Message>
+      <Command Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SC:/OcrAnalysis -BC:/OcrAnalysis --check-stamp-file C:/OcrAnalysis/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+      <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">C:\OcrAnalysis\CMakeFiles\4.1.1\CMakeCXXCompiler.cmake;C:\OcrAnalysis\CMakeFiles\4.1.1\CMakeRCCompiler.cmake;C:\OcrAnalysis\CMakeFiles\4.1.1\CMakeSystem.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CMakeCXXInformation.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CMakeCommonLanguageInclude.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CMakeDependentOption.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CMakeFindDependencyMacro.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CMakeGenericSystem.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CMakeInitializeConfigs.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CMakeLanguageInformation.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CMakeRCInformation.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CMakeSystemSpecificInformation.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CMakeSystemSpecificInitialize.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckCXXSourceCompiles.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckIncludeFileCXX.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckLibraryExists.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\Compiler\CMakeCommonCompilerMacros.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\Compiler\MSVC-CXX.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\Compiler\MSVC.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\FindPackageHandleStandardArgs.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\FindPackageMessage.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\FindPkgConfig.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\FindTIFF.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\FindThreads.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\Internal\CMakeCXXLinkerInformation.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\Internal\CMakeCommonLinkerInformation.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\Internal\CheckSourceCompiles.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\Linker\MSVC-CXX.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\Linker\MSVC.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\Platform\Linker\Windows-MSVC-CXX.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\Platform\Linker\Windows-MSVC.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\Platform\Windows-Initialize.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\Platform\Windows-MSVC-CXX.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\Platform\Windows-MSVC.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\Platform\Windows.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\Platform\WindowsPaths.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\SelectLibraryConfigurations.cmake;C:\vcpkg\installed\x64-windows\share\absl\abslConfig.cmake;C:\vcpkg\installed\x64-windows\share\absl\abslConfigVersion.cmake;C:\vcpkg\installed\x64-windows\share\absl\abslTargets-debug.cmake;C:\vcpkg\installed\x64-windows\share\absl\abslTargets-release.cmake;C:\vcpkg\installed\x64-windows\share\absl\abslTargets.cmake;C:\vcpkg\installed\x64-windows\share\opencv\vcpkg-cmake-wrapper.cmake;C:\vcpkg\installed\x64-windows\share\opencv4\OpenCVConfig-version.cmake;C:\vcpkg\installed\x64-windows\share\opencv4\OpenCVConfig.cmake;C:\vcpkg\installed\x64-windows\share\opencv4\OpenCVModules-debug.cmake;C:\vcpkg\installed\x64-windows\share\opencv4\OpenCVModules-release.cmake;C:\vcpkg\installed\x64-windows\share\opencv4\OpenCVModules.cmake;C:\vcpkg\installed\x64-windows\share\protobuf\protobuf-config-version.cmake;C:\vcpkg\installed\x64-windows\share\protobuf\protobuf-config.cmake;C:\vcpkg\installed\x64-windows\share\protobuf\protobuf-generate.cmake;C:\vcpkg\installed\x64-windows\share\protobuf\protobuf-module.cmake;C:\vcpkg\installed\x64-windows\share\protobuf\protobuf-options.cmake;C:\vcpkg\installed\x64-windows\share\protobuf\protobuf-targets-debug.cmake;C:\vcpkg\installed\x64-windows\share\protobuf\protobuf-targets-release.cmake;C:\vcpkg\installed\x64-windows\share\protobuf\protobuf-targets.cmake;C:\vcpkg\installed\x64-windows\share\protobuf\vcpkg-cmake-wrapper.cmake;C:\vcpkg\installed\x64-windows\share\quirc\quirc-config-debug.cmake;C:\vcpkg\installed\x64-windows\share\quirc\quirc-config-release.cmake;C:\vcpkg\installed\x64-windows\share\quirc\quirc-config.cmake;C:\vcpkg\installed\x64-windows\share\tiff\vcpkg-cmake-wrapper.cmake;C:\vcpkg\installed\x64-windows\share\utf8_range\utf8_range-config.cmake;C:\vcpkg\installed\x64-windows\share\utf8_range\utf8_range-targets-debug.cmake;C:\vcpkg\installed\x64-windows\share\utf8_range\utf8_range-targets-release.cmake;C:\vcpkg\installed\x64-windows\share\utf8_range\utf8_range-targets.cmake;C:\vcpkg\scripts\buildsystems\vcpkg.cmake;%(AdditionalInputs)</AdditionalInputs>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">C:\OcrAnalysis\CMakeFiles\generate.stamp</Outputs>
+      <LinkObjects Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">false</LinkObjects>
+      <Message Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">Building Custom Rule C:/OcrAnalysis/CMakeLists.txt</Message>
+      <Command Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SC:/OcrAnalysis -BC:/OcrAnalysis --check-stamp-file C:/OcrAnalysis/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+      <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">C:\OcrAnalysis\CMakeFiles\4.1.1\CMakeCXXCompiler.cmake;C:\OcrAnalysis\CMakeFiles\4.1.1\CMakeRCCompiler.cmake;C:\OcrAnalysis\CMakeFiles\4.1.1\CMakeSystem.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CMakeCXXInformation.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CMakeCommonLanguageInclude.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CMakeDependentOption.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CMakeFindDependencyMacro.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CMakeGenericSystem.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CMakeInitializeConfigs.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CMakeLanguageInformation.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CMakeRCInformation.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CMakeSystemSpecificInformation.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CMakeSystemSpecificInitialize.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckCXXSourceCompiles.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckIncludeFileCXX.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckLibraryExists.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\Compiler\CMakeCommonCompilerMacros.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\Compiler\MSVC-CXX.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\Compiler\MSVC.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\FindPackageHandleStandardArgs.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\FindPackageMessage.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\FindPkgConfig.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\FindTIFF.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\FindThreads.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\Internal\CMakeCXXLinkerInformation.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\Internal\CMakeCommonLinkerInformation.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\Internal\CheckSourceCompiles.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\Linker\MSVC-CXX.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\Linker\MSVC.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\Platform\Linker\Windows-MSVC-CXX.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\Platform\Linker\Windows-MSVC.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\Platform\Windows-Initialize.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\Platform\Windows-MSVC-CXX.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\Platform\Windows-MSVC.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\Platform\Windows.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\Platform\WindowsPaths.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\SelectLibraryConfigurations.cmake;C:\vcpkg\installed\x64-windows\share\absl\abslConfig.cmake;C:\vcpkg\installed\x64-windows\share\absl\abslConfigVersion.cmake;C:\vcpkg\installed\x64-windows\share\absl\abslTargets-debug.cmake;C:\vcpkg\installed\x64-windows\share\absl\abslTargets-release.cmake;C:\vcpkg\installed\x64-windows\share\absl\abslTargets.cmake;C:\vcpkg\installed\x64-windows\share\opencv\vcpkg-cmake-wrapper.cmake;C:\vcpkg\installed\x64-windows\share\opencv4\OpenCVConfig-version.cmake;C:\vcpkg\installed\x64-windows\share\opencv4\OpenCVConfig.cmake;C:\vcpkg\installed\x64-windows\share\opencv4\OpenCVModules-debug.cmake;C:\vcpkg\installed\x64-windows\share\opencv4\OpenCVModules-release.cmake;C:\vcpkg\installed\x64-windows\share\opencv4\OpenCVModules.cmake;C:\vcpkg\installed\x64-windows\share\protobuf\protobuf-config-version.cmake;C:\vcpkg\installed\x64-windows\share\protobuf\protobuf-config.cmake;C:\vcpkg\installed\x64-windows\share\protobuf\protobuf-generate.cmake;C:\vcpkg\installed\x64-windows\share\protobuf\protobuf-module.cmake;C:\vcpkg\installed\x64-windows\share\protobuf\protobuf-options.cmake;C:\vcpkg\installed\x64-windows\share\protobuf\protobuf-targets-debug.cmake;C:\vcpkg\installed\x64-windows\share\protobuf\protobuf-targets-release.cmake;C:\vcpkg\installed\x64-windows\share\protobuf\protobuf-targets.cmake;C:\vcpkg\installed\x64-windows\share\protobuf\vcpkg-cmake-wrapper.cmake;C:\vcpkg\installed\x64-windows\share\quirc\quirc-config-debug.cmake;C:\vcpkg\installed\x64-windows\share\quirc\quirc-config-release.cmake;C:\vcpkg\installed\x64-windows\share\quirc\quirc-config.cmake;C:\vcpkg\installed\x64-windows\share\tiff\vcpkg-cmake-wrapper.cmake;C:\vcpkg\installed\x64-windows\share\utf8_range\utf8_range-config.cmake;C:\vcpkg\installed\x64-windows\share\utf8_range\utf8_range-targets-debug.cmake;C:\vcpkg\installed\x64-windows\share\utf8_range\utf8_range-targets-release.cmake;C:\vcpkg\installed\x64-windows\share\utf8_range\utf8_range-targets.cmake;C:\vcpkg\scripts\buildsystems\vcpkg.cmake;%(AdditionalInputs)</AdditionalInputs>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">C:\OcrAnalysis\CMakeFiles\generate.stamp</Outputs>
+      <LinkObjects Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">false</LinkObjects>
+    </CustomBuild>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="C:\OcrAnalysis\src\main.cpp" />
+  </ItemGroup>
+  <ItemGroup />
+  <ItemGroup>
+    <ProjectReference Include="C:\OcrAnalysis\ZERO_CHECK.vcxproj">
+      <Project>{32435ACD-5A95-3ECA-82AE-1620735DF91D}</Project>
+      <Name>ZERO_CHECK</Name>
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+      <CopyToOutputDirectory>Never</CopyToOutputDirectory>
+    </ProjectReference>
+    <ProjectReference Include="C:\OcrAnalysis\ocr_analysis.vcxproj">
+      <Project>{C674D82B-8F1C-3EFA-A4DB-D1BCCE8237CB}</Project>
+      <Name>ocr_analysis</Name>
+    </ProjectReference>
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets">
+  </ImportGroup>
+</Project>
