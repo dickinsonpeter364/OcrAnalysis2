@@ -148,6 +148,10 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "test_strip_bleed_marks", "t
 		{C674D82B-8F1C-3EFA-A4DB-D1BCCE8237CB} = {C674D82B-8F1C-3EFA-A4DB-D1BCCE8237CB}
 	EndProjectSection
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "OcrAnalysisLib", "OcrAnalysisLib.vcxproj", "{5D9E8F2A-B4C3-4A1D-9E7F-3B5C8D2A4F6E}"
+	ProjectSection(ProjectDependencies) = postProject
+	EndProjectSection
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x64 = Debug|x64
@@ -328,6 +332,14 @@ Global
 		{61D668CE-34FB-3CD9-B298-95529D69BEE0}.MinSizeRel|x64.Build.0 = MinSizeRel|x64
 		{61D668CE-34FB-3CD9-B298-95529D69BEE0}.RelWithDebInfo|x64.ActiveCfg = RelWithDebInfo|x64
 		{61D668CE-34FB-3CD9-B298-95529D69BEE0}.RelWithDebInfo|x64.Build.0 = RelWithDebInfo|x64
+		{5D9E8F2A-B4C3-4A1D-9E7F-3B5C8D2A4F6E}.Debug|x64.ActiveCfg = Debug|x64
+		{5D9E8F2A-B4C3-4A1D-9E7F-3B5C8D2A4F6E}.Debug|x64.Build.0 = Debug|x64
+		{5D9E8F2A-B4C3-4A1D-9E7F-3B5C8D2A4F6E}.Release|x64.ActiveCfg = Release|x64
+		{5D9E8F2A-B4C3-4A1D-9E7F-3B5C8D2A4F6E}.Release|x64.Build.0 = Release|x64
+		{5D9E8F2A-B4C3-4A1D-9E7F-3B5C8D2A4F6E}.MinSizeRel|x64.ActiveCfg = MinSizeRel|x64
+		{5D9E8F2A-B4C3-4A1D-9E7F-3B5C8D2A4F6E}.MinSizeRel|x64.Build.0 = MinSizeRel|x64
+		{5D9E8F2A-B4C3-4A1D-9E7F-3B5C8D2A4F6E}.RelWithDebInfo|x64.ActiveCfg = RelWithDebInfo|x64
+		{5D9E8F2A-B4C3-4A1D-9E7F-3B5C8D2A4F6E}.RelWithDebInfo|x64.Build.0 = RelWithDebInfo|x64
 	EndGlobalSection
 	GlobalSection(ExtensibilityGlobals) = postSolution
 		SolutionGuid = {05ED458F-6AB8-36DC-9DB8-56CB7EE1CFCD}
