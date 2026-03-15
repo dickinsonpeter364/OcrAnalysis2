@@ -6,6 +6,9 @@
 #include <iostream>
 #include <limits>
 #include <numeric>
+#include <set>
+#include <unordered_map>
+#include <vector>
 
 namespace ocr {
 
@@ -31,6 +34,24 @@ static std::string normaliseForMatch(const std::string &s) {
     out.push_back(static_cast<char>(std::tolower(c)));
   }
   return out;
+}
+
+/**
+ * @brief Compute Levenshtein edit distance between two strings.
+ */
+static int levenshtein(const std::string &s, const std::string &t) {
+  int m = static_cast<int>(s.size()), n = static_cast<int>(t.size());
+  std::vector<int> dp0(n + 1), dp1(n + 1);
+  for (int j = 0; j <= n; ++j) dp0[j] = j;
+  for (int i = 1; i <= m; ++i) {
+    dp1[0] = i;
+    for (int j = 1; j <= n; ++j)
+      dp1[j] = (s[i-1] == t[j-1])
+               ? dp0[j-1]
+               : 1 + std::min({dp0[j], dp1[j-1], dp0[j-1]});
+    std::swap(dp0, dp1);
+  }
+  return dp0[n];
 }
 
 /**
@@ -96,10 +117,13 @@ static std::vector<OcrWord> ocrDetectWords(const cv::Mat &image) {
  *        detected in the target image.
  */
 struct MatchedPair {
-  double relCentreX; // relative centre X from PDF map
-  double relCentreY; // relative centre Y from PDF map
-  double ocrCentreX; // pixel centre X from OCR detection
-  double ocrCentreY; // pixel centre Y from OCR detection
+  size_t elementIdx;  // absolute index into result.elements
+  double relCentreX;  // relative centre X from PDF map
+  double relCentreY;  // relative centre Y from PDF map
+  double ocrCentreX;  // pixel centre X from OCR detection
+  double ocrCentreY;  // pixel centre Y from OCR detection
+  int    ocrWidth;    // pixel width of the OCR word bounding box
+  int    ocrHeight;   // pixel height of the OCR word bounding box
 };
 
 /**
@@ -129,13 +153,6 @@ static bool solveCropRectFromMatches(const std::vector<MatchedPair> &matches,
     return false;
   }
 
-  // Solve X system: ocrX = relX * cropWidth + cropX
-  // Using least squares: minimise sum((ocrX_i - relX_i * w - cx)^2)
-  // Normal equations for y = ax + b:
-  //   sum(x^2)*a + sum(x)*b = sum(x*y)
-  //   sum(x)*a + n*b = sum(y)
-  // where x = relCentreX, y = ocrCentreX, a = cropWidth, b = cropX
-
   int n = static_cast<int>(matches.size());
   double sumRelX = 0, sumRelX2 = 0, sumOcrX = 0, sumRelXOcrX = 0;
   double sumRelY = 0, sumRelY2 = 0, sumOcrY = 0, sumRelYOcrY = 0;
@@ -152,8 +169,6 @@ static bool solveCropRectFromMatches(const std::vector<MatchedPair> &matches,
     sumRelYOcrY += m.relCentreY * m.ocrCentreY;
   }
 
-  // Solve for X: [sumRelX2, sumRelX; sumRelX, n] * [cropWidth; cropX] =
-  // [sumRelXOcrX; sumOcrX]
   double detX = sumRelX2 * n - sumRelX * sumRelX;
   if (std::abs(detX) < 1e-10) {
     std::cerr << "X system is singular (all matches at same relativeX?)"
@@ -163,7 +178,6 @@ static bool solveCropRectFromMatches(const std::vector<MatchedPair> &matches,
   double cropWidth = (sumRelXOcrX * n - sumRelX * sumOcrX) / detX;
   double cropX = (sumRelX2 * sumOcrX - sumRelX * sumRelXOcrX) / detX;
 
-  // Solve for Y: same approach
   double detY = sumRelY2 * n - sumRelY * sumRelY;
   if (std::abs(detY) < 1e-10) {
     std::cerr << "Y system is singular (all matches at same relativeY?)"
@@ -178,13 +192,11 @@ static bool solveCropRectFromMatches(const std::vector<MatchedPair> &matches,
             << " cropWidth=" << cropWidth << " cropHeight=" << cropHeight
             << std::endl;
 
-  // Validate the result
   if (cropWidth < 10 || cropHeight < 10) {
     std::cerr << "Solved crop dimensions too small" << std::endl;
     return false;
   }
 
-  // Report per-match residuals
   double totalResidual = 0;
   for (const auto &m : matches) {
     double predX = m.relCentreX * cropWidth + cropX;
@@ -205,204 +217,398 @@ static bool solveCropRectFromMatches(const std::vector<MatchedPair> &matches,
   return true;
 }
 
+// ── Bounds helpers ────────────────────────────────────────────────────────────
+
+struct BoundsResult {
+  bool success = false;
+  std::string errorMessage;
+  double minX = 0, minY = 0, maxX = 0, maxY = 0;
+  double width()  const { return maxX - minX; }
+  double height() const { return maxY - minY; }
+};
+
+static BoundsResult computeBounds(const OCRAnalysis::PDFElements &elements,
+                                  OCRAnalysis::RenderBoundsMode boundsMode) {
+  BoundsResult r;
+
+  if (boundsMode == OCRAnalysis::RenderBoundsMode::USE_LARGEST_RECTANGLE) {
+    double largestArea = 0;
+    const OCRAnalysis::PDFRectangle *largestRect = nullptr;
+    for (const auto &rect : elements.rectangles) {
+      double area = rect.width * rect.height;
+      if (area > largestArea) { largestArea = area; largestRect = &rect; }
+    }
+
+    if (largestRect == nullptr) {
+      if (!elements.images.empty()) {
+        double largestImageArea = 0.0;
+        const OCRAnalysis::PDFEmbeddedImage *largestImage = nullptr;
+        for (const auto &img : elements.images) {
+          double area = img.displayWidth * img.displayHeight;
+          if (area > largestImageArea) { largestImageArea = area; largestImage = &img; }
+        }
+        if (largestImage != nullptr) {
+          r.minX = largestImage->x;
+          r.minY = largestImage->y;
+          r.maxX = largestImage->x + largestImage->displayWidth;
+          r.maxY = largestImage->y + largestImage->displayHeight;
+          r.success = true;
+        } else {
+          r.errorMessage = "Could not find valid rectangle or image";
+        }
+      } else {
+        r.errorMessage = "No rectangles or images found for USE_LARGEST_RECTANGLE mode";
+      }
+    } else {
+      double rectTopLeftY    = largestRect->y;
+      double rectBottomLeftY = rectTopLeftY + largestRect->height;
+      r.minX = largestRect->x;
+      r.minY = elements.pageHeight - rectBottomLeftY;
+      r.maxX = largestRect->x + largestRect->width;
+      r.maxY = elements.pageHeight - rectTopLeftY;
+      r.success = true;
+    }
+
+  } else if (elements.linesBoundingBoxWidth > 0 &&
+             elements.linesBoundingBoxHeight > 0) {
+    r.minX = elements.linesBoundingBoxX;
+    r.minY = elements.linesBoundingBoxY;
+    r.maxX = elements.linesBoundingBoxX + elements.linesBoundingBoxWidth;
+    r.maxY = elements.linesBoundingBoxY + elements.linesBoundingBoxHeight;
+    r.success = true;
+
+  } else {
+    r.minX = std::numeric_limits<double>::max();
+    r.minY = std::numeric_limits<double>::max();
+    r.maxX = std::numeric_limits<double>::lowest();
+    r.maxY = std::numeric_limits<double>::lowest();
+
+    for (const auto &text : elements.textLines) {
+      if (isMostlyUnderscores(text.text)) continue;
+      r.minX = std::min(r.minX, static_cast<double>(text.boundingBox.x));
+      r.minY = std::min(r.minY, static_cast<double>(text.boundingBox.y));
+      r.maxX = std::max(r.maxX, static_cast<double>(text.boundingBox.x + text.boundingBox.width));
+      r.maxY = std::max(r.maxY, static_cast<double>(text.boundingBox.y + text.boundingBox.height));
+    }
+    for (const auto &img : elements.images) {
+      r.minX = std::min(r.minX, img.x);
+      r.minY = std::min(r.minY, img.y);
+      r.maxX = std::max(r.maxX, img.x + img.displayWidth);
+      r.maxY = std::max(r.maxY, img.y + img.displayHeight);
+    }
+
+    if (r.minX == std::numeric_limits<double>::max()) {
+      r.errorMessage = "No elements found to create relative map";
+    } else {
+      r.success = true;
+    }
+  }
+
+  return r;
+}
+
+/**
+ * @brief Convert raw PDF elements to relative coordinates using the given
+ *        bounds, filtering elements outside [0,1], and append to outElements.
+ */
+static void addPDFElementsToMap(
+    const OCRAnalysis::PDFElements &src,
+    const BoundsResult &b,
+    std::vector<OCRAnalysis::RelativeElement> &outElements)
+{
+  using RE = OCRAnalysis::RelativeElement;
+  double bW = b.width(), bH = b.height();
+
+  // Text elements
+  for (const auto &text : src.textLines) {
+    if (isMostlyUnderscores(text.text)) continue;
+
+    double tX = (text.preciseWidth  > 0) ? text.preciseX      : text.boundingBox.x;
+    double tY = (text.preciseWidth  > 0) ? text.preciseY      : text.boundingBox.y;
+    double tW = (text.preciseWidth  > 0) ? text.preciseWidth  : text.boundingBox.width;
+    double tH = (text.preciseHeight > 0) ? text.preciseHeight : text.boundingBox.height;
+
+    // tY is screen-top; flip relative to bounds
+    double topLeftY = bH - (tY - b.minY + tH);
+
+    RE elem;
+    elem.type          = RE::TEXT;
+    elem.relativeWidth  = tW / bW;
+    elem.relativeHeight = tH / bH;
+    elem.relativeX      = (tX - b.minX + tW / 2.0) / bW;
+    elem.relativeY      = (topLeftY + tH / 2.0)     / bH;
+
+    double left   = elem.relativeX - elem.relativeWidth  / 2.0;
+    double right  = elem.relativeX + elem.relativeWidth  / 2.0;
+    double top    = elem.relativeY - elem.relativeHeight / 2.0;
+    double bottom = elem.relativeY + elem.relativeHeight / 2.0;
+    if (right < 0.0 || left > 1.0 || bottom < 0.0 || top > 1.0) continue;
+
+    elem.text      = text.text;
+    elem.fontName  = text.fontName;
+    elem.fontSize  = text.fontSize;
+    elem.isBold    = text.isBold;
+    elem.isItalic  = text.isItalic;
+    outElements.push_back(elem);
+  }
+
+  // Image elements
+  for (const auto &img : src.images) {
+    double imgTopLeftY = bH - (img.y - b.minY + img.displayHeight);
+
+    RE elem;
+    elem.type           = RE::IMAGE;
+    elem.relativeWidth  = img.displayWidth  / bW;
+    elem.relativeHeight = img.displayHeight / bH;
+    elem.relativeX      = (img.x - b.minX + img.displayWidth  / 2.0) / bW;
+    elem.relativeY      = (imgTopLeftY      + img.displayHeight / 2.0) / bH;
+
+    double left   = elem.relativeX - elem.relativeWidth  / 2.0;
+    double right  = elem.relativeX + elem.relativeWidth  / 2.0;
+    double top    = elem.relativeY - elem.relativeHeight / 2.0;
+    double bottom = elem.relativeY + elem.relativeHeight / 2.0;
+    if (right < 0.0 || left > 1.0 || bottom < 0.0 || top > 1.0) continue;
+
+    outElements.push_back(elem);
+  }
+}
+
+// ── OCR anchor helpers ────────────────────────────────────────────────────────
+
+/**
+ * @brief Match ALL eligible non-placeholder text elements in [fromIdx, toIdx)
+ *        against OCR words. Returns every matched pair with its element index
+ *        and OCR bounding box.
+ */
+static std::vector<MatchedPair>
+findAllMatchedPairs(const std::vector<OCRAnalysis::RelativeElement> &elements,
+                    size_t fromIdx, size_t toIdx,
+                    const std::vector<OcrWord> &ocrWords)
+{
+  using RE = OCRAnalysis::RelativeElement;
+  std::vector<MatchedPair> allMatches;
+  std::set<std::string> seenTexts;
+
+  for (size_t i = fromIdx; i < toIdx; ++i) {
+    const auto &elem = elements[i];
+    if (elem.type != RE::TEXT) continue;
+    if (elem.text.find('<') != std::string::npos ||
+        elem.text.find('>') != std::string::npos) continue;
+    if (elem.relativeX < 0.0 || elem.relativeX > 1.0 ||
+        elem.relativeY < 0.0 || elem.relativeY > 1.0) continue;
+    std::string normPdf = normaliseForMatch(elem.text);
+    if (normPdf.length() < 2) continue;
+    if (!seenTexts.insert(normPdf).second) continue;
+
+    // Two-pass: prefer exact matches over substring/fuzzy so that a short
+    // element ("Code:") doesn't steal an OCR word ("Ref.Code:") that belongs
+    // to a longer, more specific element.
+    const OcrWord *bestWord = nullptr;
+    for (const auto &word : ocrWords) {
+      std::string normOcr = normaliseForMatch(word.text);
+      if (normPdf == normOcr) { bestWord = &word; break; } // exact — stop here
+    }
+    if (!bestWord) {
+      for (const auto &word : ocrWords) {
+        std::string normOcr = normaliseForMatch(word.text);
+        bool isMatch =
+            (normPdf.length() >= 4 && normOcr.find(normPdf) != std::string::npos) ||
+            (normOcr.length() >= 4 && normPdf.find(normOcr) != std::string::npos);
+        if (!isMatch && normPdf.length() >= 6 && normOcr.length() >= 6) {
+          int maxDist = std::max(2, static_cast<int>(normPdf.length()) / 5);
+          if (levenshtein(normPdf, normOcr) <= maxDist)
+            isMatch = true;
+        }
+        if (isMatch) { bestWord = &word; break; }
+      }
+    }
+    if (bestWord) {
+      std::cerr << "  Matched \"" << elem.text << "\" -> OCR \""
+                << bestWord->text << "\"  conf=" << bestWord->confidence << std::endl;
+      MatchedPair mp;
+      mp.elementIdx  = i;
+      mp.relCentreX  = elem.relativeX;
+      mp.relCentreY  = elem.relativeY;
+      mp.ocrCentreX  = bestWord->x + bestWord->width  / 2.0;
+      mp.ocrCentreY  = bestWord->y + bestWord->height / 2.0;
+      mp.ocrWidth    = bestWord->width;
+      mp.ocrHeight   = bestWord->height;
+      allMatches.push_back(mp);
+    }
+  }
+  return allMatches;
+}
+
+/**
+ * @brief From all matched pairs, pick up to maxMatches with maximum vertical
+ *        spread (so the Y system in solveCropRectFromMatches is non-singular).
+ */
+static std::vector<MatchedPair>
+findBestMatchedPairs(const std::vector<MatchedPair> &allMatches,
+                     int maxMatches = 3)
+{
+  constexpr double kYSpread = 0.05;
+
+  std::vector<MatchedPair> chosen;
+  for (const auto &mp : allMatches) {
+    if (static_cast<int>(chosen.size()) >= maxMatches) break;
+    bool tooClose = false;
+    for (const auto &c : chosen) {
+      if (std::abs(mp.relCentreY - c.relCentreY) < kYSpread) {
+        tooClose = true;
+        break;
+      }
+    }
+    if (!tooClose)
+      chosen.push_back(mp);
+  }
+
+  // If we couldn't meet the spread requirement, fall back to all matches
+  if (chosen.size() < 2 && allMatches.size() >= 2)
+    chosen = allMatches;
+
+  return chosen;
+}
+
+/**
+ * @brief Draw a slice of elements onto canvas using the given transform.
+ *        For elements that have a direct OCR match in ocrByIndex, the OCR
+ *        bounding box is used directly (exact position and width).
+ *        Placeholders have their width expanded by 3.2×.
+ *        Text → blue, Image → green.
+ */
+static int drawElements(
+    cv::Mat &canvas,
+    const std::vector<OCRAnalysis::RelativeElement> &elements,
+    size_t fromIdx, size_t toIdx,
+    double scaleX, double scaleY, double offX, double offY,
+    const std::vector<MatchedPair> &allMatches = {})
+{
+  // Build index: element index → matched pair
+  std::unordered_map<size_t, const MatchedPair*> ocrByIndex;
+  for (const auto &mp : allMatches)
+    ocrByIndex[mp.elementIdx] = &mp;
+
+  using RE = OCRAnalysis::RelativeElement;
+  int drawn = 0;
+  for (size_t i = fromIdx; i < toIdx; ++i) {
+    const auto &elem = elements[i];
+
+    int pixW, pixH, pixX, pixY;
+    auto it = ocrByIndex.find(i);
+    if (it != ocrByIndex.end()) {
+      // Use OCR bounding box directly — exact position and width
+      const MatchedPair &mp = *it->second;
+      pixW = mp.ocrWidth;
+      pixH = mp.ocrHeight;
+      pixX = static_cast<int>(std::round(mp.ocrCentreX - pixW / 2.0));
+      pixY = static_cast<int>(std::round(mp.ocrCentreY - pixH / 2.0));
+    } else {
+      pixW = std::max(1, static_cast<int>(std::round(elem.relativeWidth  * scaleX)));
+      pixH = std::max(1, static_cast<int>(std::round(elem.relativeHeight * scaleY)));
+      pixX = static_cast<int>(std::round(elem.relativeX * scaleX + offX - pixW / 2.0));
+      pixY = static_cast<int>(std::round(elem.relativeY * scaleY + offY - pixH / 2.0));
+
+      bool isPlaceholder = elem.type == RE::TEXT &&
+          (elem.text.find('<') != std::string::npos ||
+           elem.text.find('>') != std::string::npos);
+      if (isPlaceholder)
+        pixW = std::min(static_cast<int>(std::round(pixW * 3.2)),
+                        canvas.cols - std::max(0, pixX));
+    }
+
+    int x1 = std::max(0, std::min(pixX,        canvas.cols - 1));
+    int y1 = std::max(0, std::min(pixY,        canvas.rows - 1));
+    int x2 = std::max(0, std::min(pixX + pixW, canvas.cols - 1));
+    int y2 = std::max(0, std::min(pixY + pixH, canvas.rows - 1));
+
+    if (x2 > x1 && y2 > y1) {
+      cv::Scalar color = (elem.type == RE::TEXT)
+                             ? cv::Scalar(255, 0, 0)   // blue  – text
+                             : cv::Scalar(0, 255, 0);  // green – image
+      cv::rectangle(canvas, cv::Point(x1, y1), cv::Point(x2, y2), color, 2);
+      ++drawn;
+    }
+  }
+  return drawn;
+}
+
+// ── Main function ─────────────────────────────────────────────────────────────
+
 OCRAnalysis::RelativeMapResult
 OCRAnalysis::createRelativeMap(const PDFElements &elements,
                                RenderBoundsMode boundsMode, double dpi,
-                               const std::string &markToFile) {
+                               const std::string &markToFile,
+                               const std::string &l2PdfPath) {
   OCRAnalysis::RelativeMapResult result;
 
   try {
-    // Calculate bounds using the same logic as renderElementsToPNG
-    double minX, minY, maxX, maxY;
-
-    if (boundsMode == RenderBoundsMode::USE_LARGEST_RECTANGLE) {
-      // Use the largest rectangle to determine bounds
-      double largestArea = 0;
-      const PDFRectangle *largestRect = nullptr;
-
-      for (const auto &rect : elements.rectangles) {
-        double area = rect.width * rect.height;
-        if (area > largestArea) {
-          largestArea = area;
-          largestRect = &rect;
-        }
-      }
-
-      if (largestRect == nullptr) {
-        // No rectangles found - try to use largest image instead
-        if (!elements.images.empty()) {
-          double largestImageArea = 0.0;
-          const PDFEmbeddedImage *largestImage = nullptr;
-
-          for (const auto &img : elements.images) {
-            double area = img.displayWidth * img.displayHeight;
-            if (area > largestImageArea) {
-              largestImageArea = area;
-              largestImage = &img;
-            }
-          }
-
-          if (largestImage != nullptr) {
-            minX = largestImage->x;
-            minY = largestImage->y;
-            maxX = largestImage->x + largestImage->displayWidth;
-            maxY = largestImage->y + largestImage->displayHeight;
-          } else {
-            result.errorMessage = "Could not find valid rectangle or image";
-            return result;
-          }
-        } else {
-          result.errorMessage =
-              "No rectangles or images found for USE_LARGEST_RECTANGLE mode";
-          return result;
-        }
-      } else {
-        // Convert rectangle from top-left to bottom-left origin
-        double rectTopLeftY = largestRect->y;
-        double rectBottomLeftY = rectTopLeftY + largestRect->height;
-
-        minX = largestRect->x;
-        minY = elements.pageHeight - rectBottomLeftY;
-        maxX = largestRect->x + largestRect->width;
-        maxY = elements.pageHeight - rectTopLeftY;
-      }
-
-    } else if (elements.linesBoundingBoxWidth > 0 &&
-               elements.linesBoundingBoxHeight > 0) {
-      // Use the interior box calculated from crop marks/lines
-      minX = elements.linesBoundingBoxX;
-      minY = elements.linesBoundingBoxY;
-      maxX = elements.linesBoundingBoxX + elements.linesBoundingBoxWidth;
-      maxY = elements.linesBoundingBoxY + elements.linesBoundingBoxHeight;
-
+    // ── L1: compute bounds and relative elements ──────────────────────────────
+    // When two PDFs are supplied: first is strictly L1 (largest rectangle).
+    // When only one PDF is supplied: auto-detect — try crop marks first,
+    // fall back to largest rectangle so it works for either PDF type.
+    BoundsResult l1Bounds;
+    if (!l2PdfPath.empty()) {
+      l1Bounds = computeBounds(elements, boundsMode);
     } else {
-      // Fall back to calculating bounding box from all elements
-      minX = std::numeric_limits<double>::max();
-      minY = std::numeric_limits<double>::max();
-      maxX = std::numeric_limits<double>::lowest();
-      maxY = std::numeric_limits<double>::lowest();
-
-      // Check all elements to find actual bounds
-      // (skip text that is mostly underscores)
-      for (const auto &text : elements.textLines) {
-        if (isMostlyUnderscores(text.text))
-          continue;
-
-        double textX = text.boundingBox.x;
-        double textY = text.boundingBox.y;
-        double textWidth = text.boundingBox.width;
-        double textHeight = text.boundingBox.height;
-
-        minX = std::min(minX, textX);
-        minY = std::min(minY, textY);
-        maxX = std::max(maxX, textX + textWidth);
-        maxY = std::max(maxY, textY + textHeight);
-      }
-
-      for (const auto &img : elements.images) {
-        minX = std::min(minX, img.x);
-        minY = std::min(minY, img.y);
-        maxX = std::max(maxX, img.x + img.displayWidth);
-        maxY = std::max(maxY, img.y + img.displayHeight);
-      }
-
-      if (minX == std::numeric_limits<double>::max()) {
-        result.errorMessage = "No elements found to create relative map";
-        return result;
-      }
+      l1Bounds = computeBounds(elements, RenderBoundsMode::USE_CROP_MARKS);
+      if (!l1Bounds.success)
+        l1Bounds = computeBounds(elements, boundsMode);
+    }
+    if (!l1Bounds.success) {
+      result.errorMessage = l1Bounds.errorMessage;
+      return result;
     }
 
-    // Store the calculated bounds
-    result.boundsX = minX;
-    result.boundsY = minY;
-    result.boundsWidth = maxX - minX;
-    result.boundsHeight = maxY - minY;
+    result.boundsX      = l1Bounds.minX;
+    result.boundsY      = l1Bounds.minY;
+    result.boundsWidth  = l1Bounds.width();
+    result.boundsHeight = l1Bounds.height();
 
-    std::cerr << "Relative map bounds: (" << minX << ", " << minY << ") to ("
-              << maxX << ", " << maxY << ")" << std::endl;
-    std::cerr << "  Width: " << result.boundsWidth
-              << " pt, Height: " << result.boundsHeight << " pt" << std::endl;
-
-    // Convert text elements to relative coordinates (using centre point)
-    for (const auto &text : elements.textLines) {
-      // Skip text that is mostly underscores (e.g. "_____________________")
-      if (isMostlyUnderscores(text.text)) {
-        continue;
-      }
-
-      RelativeElement elem;
-      elem.type = RelativeElement::TEXT;
-
-      // Use high-precision coordinates if available, otherwise fall back
-      // to the integer-truncated boundingBox values.
-      double textX =
-          (text.preciseWidth > 0) ? text.preciseX : text.boundingBox.x;
-      double textY =
-          (text.preciseWidth > 0) ? text.preciseY : text.boundingBox.y;
-      double textWidth =
-          (text.preciseWidth > 0) ? text.preciseWidth : text.boundingBox.width;
-      double textHeight = (text.preciseHeight > 0) ? text.preciseHeight
-                                                   : text.boundingBox.height;
-
-      // The text boundingBox.y was converted to top-left origin during PDF
-      // extraction, but the bounds (minY/maxY) were also converted from
-      // PDF coordinates. We need to flip Y relative to the bounds so that
-      // elements at the visual top of the bounds get small relative Y values.
-      double topLeftY = result.boundsHeight - (textY - minY + textHeight);
-
-      // Calculate relative width and height
-      elem.relativeWidth = textWidth / result.boundsWidth;
-      elem.relativeHeight = textHeight / result.boundsHeight;
-
-      // Calculate relative centre coordinates (0.0 to 1.0)
-      elem.relativeX = (textX - minX + textWidth / 2.0) / result.boundsWidth;
-      elem.relativeY = (topLeftY + textHeight / 2.0) / result.boundsHeight;
-
-      // Copy text-specific fields
-      elem.text = text.text;
-      elem.fontName = text.fontName;
-      elem.fontSize = text.fontSize;
-      elem.isBold = text.isBold;
-      elem.isItalic = text.isItalic;
-
-      result.elements.push_back(elem);
-    }
-
-    // Convert image elements to relative coordinates (using centre point)
-    for (const auto &img : elements.images) {
-      RelativeElement elem;
-      elem.type = RelativeElement::IMAGE;
-
-      // Image coordinates ARE in PDF bottom-left origin, so need Y-flip.
-      // Convert to top-left: topLeftY = pageHeight - (img.y +
-      // img.displayHeight) But relative to bounds: use the same approach as
-      // renderElementsToPNG:
-      //   y = pageHeightPt - (img.y - minY + img.displayHeight)
-      // In our case pageHeightPt = boundsHeight, and we want relative coords:
-      double imgTopLeftY =
-          result.boundsHeight - (img.y - minY + img.displayHeight);
-
-      // Calculate relative width and height
-      elem.relativeWidth = img.displayWidth / result.boundsWidth;
-      elem.relativeHeight = img.displayHeight / result.boundsHeight;
-
-      // Calculate relative centre coordinates (0.0 to 1.0)
-      elem.relativeX =
-          (img.x - minX + img.displayWidth / 2.0) / result.boundsWidth;
-      elem.relativeY =
-          (imgTopLeftY + img.displayHeight / 2.0) / result.boundsHeight;
-
-      result.elements.push_back(elem);
-    }
-
-    std::cerr << "Created relative map with " << result.elements.size()
-              << " elements" << std::endl;
-    std::cerr << "  " << elements.textLines.size() << " text elements"
-              << std::endl;
-    std::cerr << "  " << elements.images.size() << " image elements"
+    std::cerr << "L1 bounds: (" << l1Bounds.minX << ", " << l1Bounds.minY
+              << ") to (" << l1Bounds.maxX << ", " << l1Bounds.maxY << ")  "
+              << l1Bounds.width() << " x " << l1Bounds.height() << " pt"
               << std::endl;
 
-    // If markToFile is provided, auto-crop using OCR and draw bounding boxes
+    addPDFElementsToMap(elements, l1Bounds, result.elements);
+    const size_t l1Count = result.elements.size();
+    std::cerr << "L1 elements added: " << l1Count << std::endl;
+
+    // ── L2: compute its own bounds and relative elements ──────────────────────
+    BoundsResult l2Bounds;
+    if (!l2PdfPath.empty()) {
+      std::cerr << "Extracting L2 elements from: " << l2PdfPath << std::endl;
+      OCRAnalysis l2Analyzer;
+      auto l2Elements = l2Analyzer.extractPDFElements(l2PdfPath);
+      if (!l2Elements.success) {
+        std::cerr << "Warning: Could not extract L2 elements: "
+                  << l2Elements.errorMessage << std::endl;
+      } else {
+        // Prefer crop-marks bounds for L2 if available; only fall back to
+        // the caller's boundsMode if the PDF has no crop-mark lines.
+        l2Bounds = computeBounds(l2Elements, RenderBoundsMode::USE_CROP_MARKS);
+        if (!l2Bounds.success)
+          l2Bounds = computeBounds(l2Elements, boundsMode);
+        if (!l2Bounds.success) {
+          std::cerr << "Warning: Could not compute L2 bounds: "
+                    << l2Bounds.errorMessage << std::endl;
+        } else {
+          std::cerr << "L2 bounds: (" << l2Bounds.minX << ", " << l2Bounds.minY
+                    << ") to (" << l2Bounds.maxX << ", " << l2Bounds.maxY
+                    << ")  " << l2Bounds.width() << " x " << l2Bounds.height()
+                    << " pt" << std::endl;
+          addPDFElementsToMap(l2Elements, l2Bounds, result.elements);
+          std::cerr << "L2 elements added: "
+                    << (result.elements.size() - l1Count) << std::endl;
+        }
+      }
+    }
+
+    std::cerr << "Total elements: " << result.elements.size()
+              << " (" << l1Count << " L1 + "
+              << (result.elements.size() - l1Count) << " L2)" << std::endl;
+
+    // ── markToFile: solve separate transforms for L1 and L2, draw both ───────
     if (!markToFile.empty()) {
       cv::Mat targetImage = cv::imread(markToFile);
       if (targetImage.empty()) {
@@ -412,278 +618,117 @@ OCRAnalysis::createRelativeMap(const PDFElements &elements,
         std::cerr << "Loaded image " << markToFile << " (" << targetImage.cols
                   << "x" << targetImage.rows << ")" << std::endl;
 
-        // Step 1: Run OCR on the target image to find all words
-        std::cerr << "\n=== OCR-based auto-crop ===" << std::endl;
+        // Run OCR once for both PDFs
         std::cerr << "Running OCR on target image..." << std::endl;
         auto ocrWords = ocrDetectWords(targetImage);
-        std::cerr << "Detected " << ocrWords.size() << " words via OCR"
-                  << std::endl;
+        std::cerr << "Detected " << ocrWords.size() << " word(s)" << std::endl;
+        for (const auto &w : ocrWords)
+          std::cerr << "  OCR word: \"" << w.text << "\" at ("
+                    << w.x << "," << w.y << ") " << w.width << "x" << w.height
+                    << " conf=" << w.confidence << std::endl;
 
-        // Log all detected OCR words for debugging
-        for (const auto &w : ocrWords) {
-          std::cerr << "  OCR word: \"" << w.text << "\" conf=" << w.confidence
-                    << " at (" << w.x << "," << w.y << ") " << w.width << "x"
-                    << w.height << std::endl;
-        }
+        cv::Mat canvas = targetImage.clone();
+        int drawn = 0;
 
-        // Step 2: Match OCR words against known text from relative map
-        // Only use text elements within bounds (0.0-1.0) for matching
-        std::vector<MatchedPair> matches;
+        // ── L1 transform ──────────────────────────────────────────────────────
+        {
+          std::cerr << "\n=== L1 OCR anchor matching ===" << std::endl;
+          auto l1All     = findAllMatchedPairs(result.elements, 0, l1Count, ocrWords);
+          auto l1Anchors = findBestMatchedPairs(l1All);
+          std::cerr << "Using " << l1Anchors.size() << " anchor pair(s) (of "
+                    << l1All.size() << " total matches)" << std::endl;
 
-        for (const auto &elem : result.elements) {
-          if (elem.type != RelativeElement::TEXT)
-            continue;
-
-          // Use ALL text elements for matching - elements outside bounds
-          // (relativeX/Y > 1.0) may still be visible in the image and
-          // are valuable for computing the crop rectangle.
-
-          // Skip very short text that could match too many false positives
-          std::string normPdfText = normaliseForMatch(elem.text);
-          if (normPdfText.length() < 2)
-            continue;
-
-          // Find the best matching OCR word
-          for (const auto &ocrWord : ocrWords) {
-            std::string normOcrText = normaliseForMatch(ocrWord.text);
-
-            // Check if one contains the other (handles partial matches)
-            bool match = false;
-            if (normPdfText == normOcrText) {
-              match = true;
-            } else if (normPdfText.length() >= 4 &&
-                       normOcrText.find(normPdfText) != std::string::npos) {
-              match = true;
-            } else if (normOcrText.length() >= 4 &&
-                       normPdfText.find(normOcrText) != std::string::npos) {
-              match = true;
+          cv::Rect cropRect;
+          if (l1Anchors.size() >= 2 && solveCropRectFromMatches(l1Anchors, cropRect)) {
+            // Y-scale sanity-check: if pixels-per-point differs >15% between X
+            // and Y (poor anchor Y-spread), override cropHeight from X-scale.
+            if (l1Bounds.width() > 0 && l1Bounds.height() > 0) {
+              double xPxPerPt = static_cast<double>(cropRect.width)  / l1Bounds.width();
+              double yPxPerPt = static_cast<double>(cropRect.height) / l1Bounds.height();
+              if (std::abs(xPxPerPt - yPxPerPt) / xPxPerPt > 0.15) {
+                int correctedHeight =
+                    static_cast<int>(std::round(xPxPerPt * l1Bounds.height()));
+                double sumOffY = 0;
+                for (const auto &mp : l1Anchors)
+                  sumOffY += mp.ocrCentreY - mp.relCentreY * correctedHeight;
+                int correctedY =
+                    static_cast<int>(std::round(sumOffY / l1Anchors.size()));
+                std::cerr << "  L1 Y-scale corrected: cropHeight "
+                          << cropRect.height << " -> " << correctedHeight
+                          << ", cropY " << cropRect.y << " -> " << correctedY
+                          << " (xPxPerPt=" << xPxPerPt
+                          << " yPxPerPt=" << yPxPerPt << ")" << std::endl;
+                cropRect.height = correctedHeight;
+                cropRect.y = correctedY;
+              }
             }
-
-            if (match) {
-              MatchedPair mp;
-              mp.relCentreX = elem.relativeX;
-              mp.relCentreY = elem.relativeY;
-              mp.ocrCentreX = ocrWord.x + ocrWord.width / 2.0;
-              mp.ocrCentreY = ocrWord.y + ocrWord.height / 2.0;
-
-              std::cerr << "  Matched: \"" << elem.text << "\" <-> \""
-                        << ocrWord.text << "\" rel=(" << mp.relCentreX << ","
-                        << mp.relCentreY << ") px=(" << mp.ocrCentreX << ","
-                        << mp.ocrCentreY << ")" << std::endl;
-
-              matches.push_back(mp);
-              break; // Use first match per element
-            }
-          }
-        }
-
-        std::cerr << "Found " << matches.size() << " text matches" << std::endl;
-
-        // Step 3: Solve for the crop rectangle
-        cv::Mat canvas;
-        cv::Rect cropRect;
-        bool cropped = false;
-
-        if (matches.size() >= 2 &&
-            solveCropRectFromMatches(matches, cropRect)) {
-          // Clamp crop rect to image bounds
-          int clampedX = std::max(0, cropRect.x);
-          int clampedY = std::max(0, cropRect.y);
-          int clampedW = std::min(cropRect.width, targetImage.cols - clampedX);
-          int clampedH = std::min(cropRect.height, targetImage.rows - clampedY);
-
-          if (clampedW > 10 && clampedH > 10) {
-            cropRect = cv::Rect(clampedX, clampedY, clampedW, clampedH);
-            canvas = targetImage(cropRect).clone();
-            cropped = true;
-            std::cerr << "Auto-cropped to: (" << cropRect.x << ", "
-                      << cropRect.y << ") " << cropRect.width << "x"
-                      << cropRect.height << std::endl;
-
-            // Save the cropped image for reference
-            std::filesystem::path markPath(markToFile);
-            std::string croppedPath = markPath.parent_path().string() + "/" +
-                                      markPath.stem().string() + "_cropped" +
-                                      markPath.extension().string();
-            cv::imwrite(croppedPath, canvas);
-            std::cerr << "Cropped image saved: " << croppedPath << std::endl;
+            drawn += drawElements(canvas, result.elements, 0, l1Count,
+                                  cropRect.width, cropRect.height,
+                                  cropRect.x, cropRect.y, l1All);
+            std::cerr << "L1: drew " << drawn << " element(s)" << std::endl;
           } else {
-            std::cerr << "Solved crop rect too small after clamping, "
-                         "using full image"
-                      << std::endl;
-            canvas = targetImage.clone();
-          }
-        } else if (matches.size() == 1) {
-          // Single-match fallback: use the PDF bounds aspect ratio
-          // to determine crop dimensions, then position using the
-          // single anchor point.
-          double expectedAR = result.boundsWidth / result.boundsHeight;
-          std::cerr << "Single match fallback using aspect ratio " << expectedAR
-                    << std::endl;
-
-          const auto &m = matches[0];
-
-          // From the relationship:
-          //   ocrCentreX = relCentreX * cropWidth + cropX
-          //   ocrCentreY = relCentreY * cropHeight + cropY
-          // With constraint: cropHeight = cropWidth / expectedAR
-          // We have 1 match (2 equations) and 3 unknowns, so sweep cropWidth.
-
-          double bestCropWidth = 0, bestCropHeight = 0;
-          double bestCropX = 0, bestCropY = 0;
-          double bestScore = -1;
-
-          for (double frac = 0.3; frac <= 1.0; frac += 0.01) {
-            double tryW = targetImage.cols * frac;
-            double tryH = tryW / expectedAR;
-
-            if (tryH > targetImage.rows)
-              continue;
-
-            // Derive position from the single match
-            double tryX = m.ocrCentreX - m.relCentreX * tryW;
-            double tryY = m.ocrCentreY - m.relCentreY * tryH;
-
-            // Check if crop rect fits within image (with 10% tolerance)
-            if (tryX < -tryW * 0.1 || tryY < -tryH * 0.1 ||
-                tryX + tryW > targetImage.cols * 1.1 ||
-                tryY + tryH > targetImage.rows * 1.1) {
-              continue;
-            }
-
-            // Score: prefer larger rects that stay within bounds
-            double clX = std::max(0.0, tryX);
-            double clY = std::max(0.0, tryY);
-            double clW = std::min(tryW, targetImage.cols - clX);
-            double clH = std::min(tryH, targetImage.rows - clY);
-            double areaFrac =
-                (clW * clH) / (targetImage.cols * targetImage.rows);
-            double penalty = 1.0;
-            if (tryX < 0)
-              penalty *= 0.8;
-            if (tryY < 0)
-              penalty *= 0.8;
-            if (tryX + tryW > targetImage.cols)
-              penalty *= 0.8;
-            if (tryY + tryH > targetImage.rows)
-              penalty *= 0.8;
-
-            double score = areaFrac * penalty;
-            if (score > bestScore) {
-              bestScore = score;
-              bestCropWidth = tryW;
-              bestCropHeight = tryH;
-              bestCropX = tryX;
-              bestCropY = tryY;
-            }
-          }
-
-          if (bestScore > 0) {
-            int cx = std::max(0, static_cast<int>(std::round(bestCropX)));
-            int cy = std::max(0, static_cast<int>(std::round(bestCropY)));
-            int cw = std::min(static_cast<int>(std::round(bestCropWidth)),
-                              targetImage.cols - cx);
-            int ch = std::min(static_cast<int>(std::round(bestCropHeight)),
-                              targetImage.rows - cy);
-
-            if (cw > 10 && ch > 10) {
-              cropRect = cv::Rect(cx, cy, cw, ch);
-              canvas = targetImage(cropRect).clone();
-              cropped = true;
-              std::cerr << "Single-match auto-cropped to: (" << cx << ", " << cy
-                        << ") " << cw << "x" << ch << std::endl;
-
-              std::filesystem::path markPath(markToFile);
-              std::string croppedPath = markPath.parent_path().string() + "/" +
-                                        markPath.stem().string() + "_cropped" +
-                                        markPath.extension().string();
-              cv::imwrite(croppedPath, canvas);
-              std::cerr << "Cropped image saved: " << croppedPath << std::endl;
-            }
-          }
-
-          if (!cropped) {
-            std::cerr << "Single-match fallback failed, using full image"
-                      << std::endl;
-            canvas = targetImage.clone();
-          }
-        } else {
-          std::cerr << "Could not solve crop rect (no matches), "
-                       "using full image"
-                    << std::endl;
-          canvas = targetImage.clone();
-        }
-
-        // Step 4: Draw bounding boxes using relative coordinates
-        int canvasWidth = canvas.cols;
-        int canvasHeight = canvas.rows;
-
-        cv::Scalar blueColor(255, 0, 0);  // Blue in BGR (for text)
-        cv::Scalar greenColor(0, 255, 0); // Green in BGR (for images)
-        int drawnCount = 0;
-
-        for (const auto &elem : result.elements) {
-          // Only draw elements within or near the bounds (0.0-1.0 range)
-          if (elem.relativeX < -0.1 || elem.relativeX > 1.1 ||
-              elem.relativeY < -0.1 || elem.relativeY > 1.1) {
-            continue;
-          }
-
-          // Convert from centre-based relative coords to pixel top-left
-          // Use std::round instead of truncation for more accurate positioning
-          int pixelWidth =
-              static_cast<int>(std::round(elem.relativeWidth * canvasWidth));
-          int pixelHeight =
-              static_cast<int>(std::round(elem.relativeHeight * canvasHeight));
-          int pixelX = static_cast<int>(std::round(
-              (elem.relativeX - elem.relativeWidth / 2.0) * canvasWidth));
-          int pixelY = static_cast<int>(std::round(
-              (elem.relativeY - elem.relativeHeight / 2.0) * canvasHeight));
-
-          // Clamp to image bounds
-          int drawX1 = std::max(0, std::min(pixelX, canvasWidth - 1));
-          int drawY1 = std::max(0, std::min(pixelY, canvasHeight - 1));
-          int drawX2 =
-              std::max(0, std::min(pixelX + pixelWidth, canvasWidth - 1));
-          int drawY2 =
-              std::max(0, std::min(pixelY + pixelHeight, canvasHeight - 1));
-
-          if (drawX2 > drawX1 && drawY2 > drawY1) {
-            cv::Scalar color =
-                (elem.type == RelativeElement::TEXT) ? blueColor : greenColor;
-            cv::rectangle(canvas, cv::Point(drawX1, drawY1),
-                          cv::Point(drawX2, drawY2), color, 2);
-            drawnCount++;
-
-            if (elem.type == RelativeElement::TEXT) {
-              std::cerr << "  Text \"" << elem.text << "\": (" << drawX1 << ","
-                        << drawY1 << ") " << (drawX2 - drawX1) << "x"
-                        << (drawY2 - drawY1) << std::endl;
-            } else {
-              std::cerr << "  Image: (" << drawX1 << "," << drawY1 << ") "
-                        << (drawX2 - drawX1) << "x" << (drawY2 - drawY1)
-                        << std::endl;
-            }
+            std::cerr << "L1: could not solve transform ("
+                      << l1Anchors.size() << " matches)" << std::endl;
           }
         }
 
-        std::cerr << "Drew " << drawnCount << " boxes on "
-                  << (cropped ? "cropped" : "full") << " image (" << canvasWidth
-                  << "x" << canvasHeight << ")" << std::endl;
+        // ── L2 transform ──────────────────────────────────────────────────────
+        const size_t l2Count = result.elements.size() - l1Count;
+        if (l2Count > 0) {
+          std::cerr << "\n=== L2 OCR anchor matching ===" << std::endl;
+          auto l2All     = findAllMatchedPairs(result.elements, l1Count,
+                                              result.elements.size(), ocrWords);
+          auto l2Anchors = findBestMatchedPairs(l2All);
+          std::cerr << "Using " << l2Anchors.size() << " anchor pair(s) (of "
+                    << l2All.size() << " total matches)" << std::endl;
 
-        // Save marked image with _relmap suffix
+          cv::Rect cropRect;
+          if (l2Anchors.size() >= 2 && solveCropRectFromMatches(l2Anchors, cropRect)) {
+            if (l2Bounds.success && l2Bounds.width() > 0 && l2Bounds.height() > 0) {
+              double xPxPerPt = static_cast<double>(cropRect.width)  / l2Bounds.width();
+              double yPxPerPt = static_cast<double>(cropRect.height) / l2Bounds.height();
+              if (std::abs(xPxPerPt - yPxPerPt) / xPxPerPt > 0.15) {
+                int correctedHeight =
+                    static_cast<int>(std::round(xPxPerPt * l2Bounds.height()));
+                double sumOffY = 0;
+                for (const auto &mp : l2Anchors)
+                  sumOffY += mp.ocrCentreY - mp.relCentreY * correctedHeight;
+                int correctedY =
+                    static_cast<int>(std::round(sumOffY / l2Anchors.size()));
+                std::cerr << "  L2 Y-scale corrected: cropHeight "
+                          << cropRect.height << " -> " << correctedHeight
+                          << ", cropY " << cropRect.y << " -> " << correctedY
+                          << " (xPxPerPt=" << xPxPerPt
+                          << " yPxPerPt=" << yPxPerPt << ")" << std::endl;
+                cropRect.height = correctedHeight;
+                cropRect.y = correctedY;
+              }
+            }
+
+            int l2Drawn = drawElements(canvas, result.elements, l1Count,
+                                       result.elements.size(),
+                                       cropRect.width, cropRect.height,
+                                       cropRect.x, cropRect.y, l2All);
+            drawn += l2Drawn;
+            std::cerr << "L2: drew " << l2Drawn << " element(s)" << std::endl;
+          } else {
+            std::cerr << "L2: could not solve transform ("
+                      << l2Anchors.size() << " matches)" << std::endl;
+          }
+        }
+
+        std::cerr << "Total drawn: " << drawn << " box(es) on image ("
+                  << canvas.cols << "x" << canvas.rows << ")" << std::endl;
+
         std::filesystem::path markPath(markToFile);
         std::string outputPath = markPath.parent_path().string() + "/" +
                                  markPath.stem().string() + "_relmap" +
                                  markPath.extension().string();
-
-        if (cv::imwrite(outputPath, canvas)) {
-          std::cerr << "Relative map marked image saved: " << outputPath
-                    << std::endl;
-        } else {
+        if (cv::imwrite(outputPath, canvas))
+          std::cerr << "Marked image saved: " << outputPath << std::endl;
+        else
           std::cerr << "ERROR: Failed to save marked image: " << outputPath
                     << std::endl;
-        }
       }
     }
 

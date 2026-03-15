@@ -739,7 +739,8 @@ public:
   RelativeMapResult createRelativeMap(
       const PDFElements &elements,
       RenderBoundsMode boundsMode = RenderBoundsMode::USE_CROP_MARKS,
-      double dpi = 300.0, const std::string &markToFile = "");
+      double dpi = 300.0, const std::string &markToFile = "",
+      const std::string &l2PdfPath = "");
 
   /**
    * @brief Align elements using OCR and create marked image with adjusted boxes

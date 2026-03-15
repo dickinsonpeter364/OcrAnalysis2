@@ -7,7 +7,7 @@
 int main(int argc, char *argv[]) {
   if (argc < 2) {
     std::cerr << "Usage: " << argv[0]
-              << " <pdf_file> [dpi] [bounds_mode] [output_dir] [mark_to_file]"
+              << " <pdf_file> [dpi] [bounds_mode] [output_dir] [mark_to_file] [l2_pdf]"
               << std::endl;
     std::cerr << "  dpi: resolution (default: 300)" << std::endl;
     std::cerr << "  bounds_mode: 'crop' (default), 'rect', or 'relmap'"
@@ -17,6 +17,8 @@ int main(int argc, char *argv[]) {
     std::cerr
         << "  mark_to_file: optional image file to mark with element boxes"
         << std::endl;
+    std::cerr << "  l2_pdf: optional second PDF whose elements are merged into the relative map"
+              << std::endl;
     std::cerr << "\nExamples:" << std::endl;
     std::cerr << "  " << argv[0] << " document.pdf" << std::endl;
     std::cerr << "  " << argv[0] << " document.pdf 1200 rect" << std::endl;
@@ -24,6 +26,8 @@ int main(int argc, char *argv[]) {
               << std::endl;
     std::cerr << "  " << argv[0]
               << " document.pdf 1200 rect images rendered.png" << std::endl;
+    std::cerr << "  " << argv[0]
+              << " doc1.pdf 300 relmap images photo.bmp doc2.pdf" << std::endl;
     return 1;
   }
 
@@ -34,6 +38,7 @@ int main(int argc, char *argv[]) {
     ocr::OCRAnalysis::RenderBoundsMode boundsMode =
         ocr::OCRAnalysis::RenderBoundsMode::USE_CROP_MARKS;
     std::string markToFile = "";
+    std::string l2PdfPath = "";
     bool useRelativeMap = false;
 
     // Parse remaining arguments flexibly
@@ -66,17 +71,19 @@ int main(int argc, char *argv[]) {
                     << "', using default 300" << std::endl;
         }
       }
-      // Check if it's a file path (contains . or / or \)
+      // Check if it's a PDF file
+      else if (argLower.ends_with(".pdf")) {
+        l2PdfPath = arg;
+      }
+      // Check if it's an image file path
       else if (arg.find('.') != std::string::npos ||
                arg.find('/') != std::string::npos ||
                arg.find('\\') != std::string::npos) {
-        // If we haven't set markToFile yet and this looks like an image, use it
         if (markToFile.empty() &&
             (argLower.ends_with(".png") || argLower.ends_with(".jpg") ||
              argLower.ends_with(".jpeg") || argLower.ends_with(".bmp"))) {
           markToFile = arg;
         } else if (outputDir == "images") {
-          // Otherwise it might be an output directory
           outputDir = arg;
         } else {
           markToFile = arg;
@@ -115,7 +122,7 @@ int main(int argc, char *argv[]) {
                 << "\n\n";
 
       auto relMapResult =
-          analyzer.createRelativeMap(elements, boundsMode, dpi, markToFile);
+          analyzer.createRelativeMap(elements, boundsMode, dpi, markToFile, l2PdfPath);
 
       if (!relMapResult.success) {
         std::cerr << "Error creating relative map: "
