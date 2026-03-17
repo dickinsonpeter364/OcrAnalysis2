@@ -121,8 +121,17 @@ int main(int argc, char *argv[]) {
                         : "USE_LARGEST_RECTANGLE")
                 << "\n\n";
 
+      cv::Mat photo;
+      if (!markToFile.empty()) {
+        photo = cv::imread(markToFile);
+        if (photo.empty())
+          std::cerr << "Warning: Could not load image: " << markToFile << std::endl;
+      }
+      bool doMark = !markToFile.empty() && !photo.empty();
+
       auto relMapResult =
-          analyzer.createRelativeMap(elements, boundsMode, dpi, markToFile, l2PdfPath);
+          analyzer.createRelativeMap(elements, photo, markToFile, doMark,
+                                     boundsMode, dpi, l2PdfPath);
 
       if (!relMapResult.success) {
         std::cerr << "Error creating relative map: "

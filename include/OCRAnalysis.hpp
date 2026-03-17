@@ -208,10 +208,12 @@ public:
     int imageIndex;       ///< Index of this image on the page (0-indexed)
     int width;            ///< Width in pixels
     int height;           ///< Height in pixels
-    double x;             ///< X position on page (PDF coordinates)
-    double y;             ///< Y position on page (PDF coordinates)
-    double displayWidth;  ///< Display width on page
-    double displayHeight; ///< Display height on page
+    double x;             ///< X position on page (PDF coordinates, AABB min-x)
+    double y;             ///< Y position on page (PDF coordinates, AABB min-y)
+    double aabbMaxX;      ///< AABB max-x in PDF coordinates
+    double aabbMaxY;      ///< AABB max-y in PDF coordinates
+    double displayWidth;  ///< Display width (CTM column-0 magnitude)
+    double displayHeight; ///< Display height (CTM column-1 magnitude)
     double rotationAngle; ///< Rotation angle in radians (counterclockwise)
     std::string type;     ///< Image type (e.g., "JPEG", "PNG", "raw")
   };
@@ -723,24 +725,56 @@ public:
    * at top-left. Positions are given as the CENTRE of each box so that
    * resizing on a different canvas is symmetrical.
    *
-   * If markToFile is provided, loads that image and draws bounding boxes
-   * over it using the relative coordinates scaled by the image dimensions,
-   * saving the result with a "_relmap" suffix.
+   * The relative map is computed by running OCR on the supplied @p image.
+   * If @p markImage is true, bounding boxes are drawn on a copy of the image
+   * and saved with a "_relmap" suffix derived from @p imageFilePath.
    *
-   * @param elements The extracted PDF elements
-   * @param boundsMode Mode for determining bounds (USE_CROP_MARKS or
-   * USE_LARGEST_RECTANGLE)
-   * @param dpi Resolution in dots per inch (used for output filename, default:
-   * 300)
-   * @param markToFile Optional path to an image file to mark with element
-   * bounding boxes (default: empty = no marking)
+   * @param elements       The extracted PDF elements
+   * @param image          The target photo as a cv::Mat (used for OCR anchor
+   *                       matching and, if markImage is true, for marking)
+   * @param imageFilePath  Filesystem path associated with @p image; used only
+   *                       to derive the "_relmap" output filename when marking
+   * @param markImage      When true, draw bounding boxes on a copy of @p image
+   *                       and write it to a "_relmap"-suffixed file
+   * @param boundsMode     Mode for determining bounds (USE_CROP_MARKS or
+   *                       USE_LARGEST_RECTANGLE, default: USE_CROP_MARKS)
+   * @param dpi            Resolution in dots per inch (default: 300)
+   * @param l2PdfPath      Optional path to a second (L2) PDF whose elements are
+   *                       added to the map (default: empty = single-PDF mode)
    * @return RelativeMapResult containing elements in relative coordinates
    */
   RelativeMapResult createRelativeMap(
-      const PDFElements &elements,
+      const PDFElements &elements, const cv::Mat &image,
+      const std::string &imageFilePath, bool markImage,
       RenderBoundsMode boundsMode = RenderBoundsMode::USE_CROP_MARKS,
-      double dpi = 300.0, const std::string &markToFile = "",
-      const std::string &l2PdfPath = "");
+      double dpi = 300.0, const std::string &l2PdfPath = "");
+
+  /**
+   * @brief Check image text against expected values from the relative map.
+   *
+   * For every TEXT element in @p relMap, substitutes placeholder tokens in the
+   * element's expected text (e.g. @c "<MED>" → @c "ADALIMUMAB"), maps the
+   * element's relative bounding box to pixel coordinates using OCR-derived
+   * anchor matching, collects OCR words whose centres fall within that box, and
+   * compares the joined OCR text to the substituted expected text using
+   * normalised fuzzy matching.
+   *
+   * Elements where the text does not match have a red bounding box drawn
+   * directly onto @p image.
+   *
+   * @param relMap       Relative map produced by createRelativeMap for the same
+   *                     label design.
+   * @param image        Photo of the physical label to validate; mismatching
+   *                     regions are annotated with red rectangles in-place.
+   * @param placeholders Ordered list of (token, value) pairs.  Every occurrence
+   *                     of @p token in an element's text is replaced by @p value
+   *                     before comparison (e.g. @c {"<MED>","ADALIMUMAB"}).
+   * @return @c true if every TEXT element matches its expected value;
+   *         @c false if one or more do not match.
+   */
+  bool checkImage(
+      const RelativeMapResult &relMap, cv::Mat &image,
+      const std::vector<std::pair<std::string, std::string>> &placeholders);
 
   /**
    * @brief Align elements using OCR and create marked image with adjusted boxes

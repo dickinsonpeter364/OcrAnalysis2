@@ -354,14 +354,21 @@ static void addPDFElementsToMap(
 
   // Image elements
   for (const auto &img : src.images) {
-    double imgTopLeftY = bH - (img.y - b.minY + img.displayHeight);
+    // Use the true AABB extents (max - min) rather than displayWidth/Height.
+    // For axis-aligned images these are identical, but for rotated images the
+    // CTM column magnitudes (displayWidth/Height) are swapped relative to the
+    // axis-aligned extents, causing incorrect centre and size calculations.
+    double aabbW = img.aabbMaxX - img.x;
+    double aabbH = img.aabbMaxY - img.y;
+
+    double imgTopLeftY = bH - (img.y - b.minY + aabbH);
 
     RE elem;
     elem.type           = RE::IMAGE;
-    elem.relativeWidth  = img.displayWidth  / bW;
-    elem.relativeHeight = img.displayHeight / bH;
-    elem.relativeX      = (img.x - b.minX + img.displayWidth  / 2.0) / bW;
-    elem.relativeY      = (imgTopLeftY      + img.displayHeight / 2.0) / bH;
+    elem.relativeWidth  = aabbW / bW;
+    elem.relativeHeight = aabbH / bH;
+    elem.relativeX      = (img.x - b.minX + aabbW / 2.0) / bW;
+    elem.relativeY      = (imgTopLeftY      + aabbH / 2.0) / bH;
 
     double left   = elem.relativeX - elem.relativeWidth  / 2.0;
     double right  = elem.relativeX + elem.relativeWidth  / 2.0;
@@ -537,8 +544,9 @@ static int drawElements(
 
 OCRAnalysis::RelativeMapResult
 OCRAnalysis::createRelativeMap(const PDFElements &elements,
+                               const cv::Mat &image,
+                               const std::string &imageFilePath, bool markImage,
                                RenderBoundsMode boundsMode, double dpi,
-                               const std::string &markToFile,
                                const std::string &l2PdfPath) {
   OCRAnalysis::RelativeMapResult result;
 
@@ -608,14 +616,13 @@ OCRAnalysis::createRelativeMap(const PDFElements &elements,
               << " (" << l1Count << " L1 + "
               << (result.elements.size() - l1Count) << " L2)" << std::endl;
 
-    // ── markToFile: solve separate transforms for L1 and L2, draw both ───────
-    if (!markToFile.empty()) {
-      cv::Mat targetImage = cv::imread(markToFile);
-      if (targetImage.empty()) {
-        std::cerr << "Warning: Could not load image for marking: " << markToFile
-                  << std::endl;
+    // ── marking: solve separate transforms for L1 and L2, draw both ─────────
+    if (markImage) {
+      if (image.empty()) {
+        std::cerr << "Warning: Supplied image is empty, cannot mark" << std::endl;
       } else {
-        std::cerr << "Loaded image " << markToFile << " (" << targetImage.cols
+        const cv::Mat &targetImage = image;
+        std::cerr << "Image supplied (" << targetImage.cols
                   << "x" << targetImage.rows << ")" << std::endl;
 
         // Run OCR once for both PDFs
@@ -720,7 +727,7 @@ OCRAnalysis::createRelativeMap(const PDFElements &elements,
         std::cerr << "Total drawn: " << drawn << " box(es) on image ("
                   << canvas.cols << "x" << canvas.rows << ")" << std::endl;
 
-        std::filesystem::path markPath(markToFile);
+        std::filesystem::path markPath(imageFilePath);
         std::string outputPath = markPath.parent_path().string() + "/" +
                                  markPath.stem().string() + "_relmap" +
                                  markPath.extension().string();
@@ -740,6 +747,156 @@ OCRAnalysis::createRelativeMap(const PDFElements &elements,
         std::string("Error creating relative map: ") + e.what();
     return result;
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// checkImage helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * @brief Replace every occurrence of each placeholder token in @p text with
+ *        its corresponding value.
+ */
+static std::string
+applyPlaceholders(const std::string &text,
+                  const std::vector<std::pair<std::string, std::string>> &placeholders)
+{
+  std::string result = text;
+  for (const auto &[token, value] : placeholders) {
+    size_t pos = 0;
+    while ((pos = result.find(token, pos)) != std::string::npos) {
+      result.replace(pos, token.size(), value);
+      pos += value.size();
+    }
+  }
+  return result;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+bool OCRAnalysis::checkImage(
+    const RelativeMapResult &relMap, cv::Mat &image,
+    const std::vector<std::pair<std::string, std::string>> &placeholders)
+{
+  using RE = RelativeElement;
+
+  if (image.empty()) {
+    std::cerr << "checkImage: image is empty" << std::endl;
+    return false;
+  }
+
+  // ── Step 1: OCR the full image once ───────────────────────────────────────
+  std::cerr << "checkImage: Running OCR on image ("
+            << image.cols << "x" << image.rows << ")" << std::endl;
+  auto ocrWords = ocrDetectWords(image);
+  std::cerr << "checkImage: Detected " << ocrWords.size() << " word(s)" << std::endl;
+
+  // ── Step 2: Solve crop rect via anchor matching ───────────────────────────
+  auto allPairs = findAllMatchedPairs(relMap.elements, 0, relMap.elements.size(), ocrWords);
+  auto anchors  = findBestMatchedPairs(allPairs);
+  std::cerr << "checkImage: " << anchors.size() << " anchor(s) (of "
+            << allPairs.size() << " match(es))" << std::endl;
+
+  cv::Rect cropRect;
+  if (anchors.size() < 2 || !solveCropRectFromMatches(anchors, cropRect)) {
+    std::cerr << "checkImage: Cannot solve crop rect – need ≥2 non-placeholder "
+                 "text anchors in the image" << std::endl;
+    return false;
+  }
+
+  // Y-scale correction: if X and Y pixels-per-point differ by >15% (poor
+  // anchor Y spread), override cropHeight using the X scale and re-solve cropY.
+  if (relMap.boundsWidth > 0 && relMap.boundsHeight > 0) {
+    double xPxPerPt = static_cast<double>(cropRect.width)  / relMap.boundsWidth;
+    double yPxPerPt = static_cast<double>(cropRect.height) / relMap.boundsHeight;
+    if (std::abs(xPxPerPt - yPxPerPt) / xPxPerPt > 0.15) {
+      int correctedH = static_cast<int>(std::round(xPxPerPt * relMap.boundsHeight));
+      double sumOffY = 0;
+      for (const auto &mp : anchors)
+        sumOffY += mp.ocrCentreY - mp.relCentreY * correctedH;
+      int correctedY = static_cast<int>(std::round(sumOffY / anchors.size()));
+      std::cerr << "checkImage: Y-scale corrected: height " << cropRect.height
+                << " -> " << correctedH << ", y " << cropRect.y
+                << " -> " << correctedY << std::endl;
+      cropRect.height = correctedH;
+      cropRect.y      = correctedY;
+    }
+  }
+
+  std::cerr << "checkImage: cropRect = (" << cropRect.x << "," << cropRect.y
+            << ") " << cropRect.width << "x" << cropRect.height << std::endl;
+
+  // ── Step 3: Check each text element ───────────────────────────────────────
+  const cv::Rect imageRect(0, 0, image.cols, image.rows);
+  bool allMatch = true;
+
+  for (size_t i = 0; i < relMap.elements.size(); ++i) {
+    const auto &elem = relMap.elements[i];
+    if (elem.type != RE::TEXT) continue;
+
+    // Substitute placeholders into expected text
+    std::string expected     = applyPlaceholders(elem.text, placeholders);
+    std::string normExpected = normaliseForMatch(expected);
+    if (normExpected.empty()) continue;
+
+    // Map relative centre/size → pixel bounding box
+    double centreX = elem.relativeX      * cropRect.width  + cropRect.x;
+    double centreY = elem.relativeY      * cropRect.height + cropRect.y;
+    double halfW   = elem.relativeWidth  * cropRect.width  / 2.0;
+    double halfH   = elem.relativeHeight * cropRect.height / 2.0;
+
+    cv::Rect box(static_cast<int>(std::round(centreX - halfW)),
+                 static_cast<int>(std::round(centreY - halfH)),
+                 static_cast<int>(std::round(halfW * 2.0)),
+                 static_cast<int>(std::round(halfH * 2.0)));
+    cv::Rect clipped = box & imageRect;
+    if (clipped.area() == 0) {
+      std::cerr << "checkImage: [" << i << "] \"" << elem.text
+                << "\" box out of image bounds – skipped" << std::endl;
+      continue;
+    }
+
+    // Collect OCR words whose centre falls within the (clipped) box, sorted
+    // left-to-right so multi-word elements are joined in reading order.
+    std::vector<const OcrWord *> inBox;
+    for (const auto &w : ocrWords) {
+      int cx = w.x + w.width  / 2;
+      int cy = w.y + w.height / 2;
+      if (clipped.contains(cv::Point(cx, cy)))
+        inBox.push_back(&w);
+    }
+    std::sort(inBox.begin(), inBox.end(),
+              [](const OcrWord *a, const OcrWord *b) { return a->x < b->x; });
+
+    std::string ocrText;
+    for (const auto *w : inBox) {
+      if (!ocrText.empty()) ocrText += ' ';
+      ocrText += w->text;
+    }
+    std::string normOcr = normaliseForMatch(ocrText);
+
+    // Match: exact normalised, then containment, then Levenshtein
+    bool match = (normExpected == normOcr);
+    if (!match)
+      match = normOcr.find(normExpected)     != std::string::npos ||
+              normExpected.find(normOcr)     != std::string::npos;
+    if (!match) {
+      int maxDist = std::max(1, static_cast<int>(normExpected.length()) / 5);
+      match = levenshtein(normExpected, normOcr) <= maxDist;
+    }
+
+    std::cerr << "checkImage: [" << i << "] \"" << elem.text << "\""
+              << " expected=\"" << expected << "\""
+              << " ocr=\"" << ocrText << "\""
+              << " -> " << (match ? "OK" : "FAIL") << std::endl;
+
+    if (!match) {
+      allMatch = false;
+      cv::rectangle(image, box, cv::Scalar(0, 0, 255), 2);
+    }
+  }
+
+  return allMatch;
 }
 
 } // namespace ocr

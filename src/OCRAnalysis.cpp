@@ -617,6 +617,8 @@ public:
 
     double x = std::min({x0, x1, x2, x3});
     double y = std::min({y0, y1, y2, y3});
+    double maxX = std::max({x0, x1, x2, x3});
+    double maxY = std::max({y0, y1, y2, y3});
     double rotationAngle = std::atan2(ctm[1], ctm[0]);
 
     OCRAnalysis::PDFEmbeddedImage img;
@@ -627,6 +629,8 @@ public:
     img.height = height;
     img.x = x;
     img.y = y;
+    img.aabbMaxX = maxX;
+    img.aabbMaxY = maxY;
     img.displayWidth = displayWidth;
     img.displayHeight = displayHeight;
     img.rotationAngle = rotationAngle;
@@ -684,6 +688,8 @@ public:
     // Find the axis-aligned bounding box (actual rendered position)
     double x = std::min({x0, x1, x2, x3});
     double y = std::min({y0, y1, y2, y3});
+    double maxX = std::max({x0, x1, x2, x3});
+    double maxY = std::max({y0, y1, y2, y3});
 
     // Determine image type and channels
     int nComps = colorMap->getNumPixelComps();
@@ -745,6 +751,8 @@ public:
     img.height = height;
     img.x = x;
     img.y = y;
+    img.aabbMaxX = maxX;
+    img.aabbMaxY = maxY;
     img.displayWidth = displayWidth;
     img.displayHeight = displayHeight;
     img.rotationAngle = rotationAngle;
@@ -853,6 +861,8 @@ public:
 
     double x = std::min({x0, x1, x2, x3});
     double y = std::min({y0, y1, y2, y3});
+    double maxX = std::max({x0, x1, x2, x3});
+    double maxY = std::max({y0, y1, y2, y3});
     double rotationAngle = std::atan2(ctm[1], ctm[0]);
 
     OCRAnalysis::PDFEmbeddedImage img;
@@ -863,6 +873,8 @@ public:
     img.height = maskHeight;
     img.x = x;
     img.y = y;
+    img.aabbMaxX = maxX;
+    img.aabbMaxY = maxY;
     img.displayWidth = displayWidth;
     img.displayHeight = displayHeight;
     img.rotationAngle = rotationAngle;
@@ -978,6 +990,8 @@ public:
 
     double x = std::min({x0, x1, x2, x3});
     double y = std::min({y0, y1, y2, y3});
+    double maxX = std::max({x0, x1, x2, x3});
+    double maxY = std::max({y0, y1, y2, y3});
     double rotationAngle = std::atan2(ctm[1], ctm[0]);
 
     OCRAnalysis::PDFEmbeddedImage img;
@@ -988,6 +1002,8 @@ public:
     img.height = colourMat.rows;
     img.x = x;
     img.y = y;
+    img.aabbMaxX = maxX;
+    img.aabbMaxY = maxY;
     img.displayWidth = displayWidth;
     img.displayHeight = displayHeight;
     img.rotationAngle = rotationAngle;
