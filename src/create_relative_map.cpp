@@ -69,21 +69,20 @@ static bool isMostlyUnderscores(const std::string &s) {
  * @brief Run Tesseract OCR on an image and return all detected words with their
  *        pixel bounding boxes.
  */
-static std::vector<OcrWord> ocrDetectWords(const cv::Mat &image) {
+/**
+ * @brief Run Tesseract recognition on @p image using an already-initialised
+ *        TessBaseAPI, returning all words above 30% confidence.
+ *        The caller is responsible for Init() and End(); this function only
+ *        calls SetImage / Recognize / Clear.
+ */
+static std::vector<OcrWord>
+ocrDetectWords(const cv::Mat &image, tesseract::TessBaseAPI *ocr,
+               tesseract::PageSegMode psm = tesseract::PSM_SINGLE_BLOCK) {
   std::vector<OcrWord> words;
 
-  tesseract::TessBaseAPI *ocr = new tesseract::TessBaseAPI();
-  if (ocr->Init("C:/tessdata/tessdata", "eng") != 0 &&
-      ocr->Init(NULL, "eng") != 0) {
-    std::cerr << "Warning: Could not initialize Tesseract for auto-crop"
-              << std::endl;
-    delete ocr;
-    return words;
-  }
-
+  ocr->SetPageSegMode(psm);
   ocr->SetImage(image.data, image.cols, image.rows, image.channels(),
                 static_cast<int>(image.step));
-  ocr->SetPageSegMode(tesseract::PSM_SINGLE_BLOCK);
   ocr->Recognize(0);
 
   tesseract::ResultIterator *ri = ocr->GetIterator();
@@ -105,8 +104,29 @@ static std::vector<OcrWord> ocrDetectWords(const cv::Mat &image) {
       }
       delete[] word;
     } while (ri->Next(tesseract::RIL_WORD));
+    delete ri;
   }
 
+  ocr->Clear();
+  return words;
+}
+
+/**
+ * @brief Convenience overload that creates its own TessBaseAPI.
+ *        Used by callers outside checkImage that don't hold a shared instance.
+ */
+static std::vector<OcrWord> ocrDetectWords(const cv::Mat &image) {
+  std::vector<OcrWord> words;
+
+  tesseract::TessBaseAPI *ocr = new tesseract::TessBaseAPI();
+  if (ocr->Init("C:/tessdata/tessdata", "eng") != 0 &&
+      ocr->Init(NULL, "eng") != 0) {
+    std::cerr << "Warning: Could not initialize Tesseract" << std::endl;
+    delete ocr;
+    return words;
+  }
+
+  words = ocrDetectWords(image, ocr);
   ocr->End();
   delete ocr;
   return words;
@@ -827,14 +847,46 @@ bool OCRAnalysis::checkImage(
     return false;
   }
 
-  // ── Step 1: OCR the full image once ───────────────────────────────────────
-  std::cerr << "checkImage: Running OCR on image ("
-            << image.cols << "x" << image.rows << ")" << std::endl;
-  auto ocrWords = ocrDetectWords(image);
-  std::cerr << "checkImage: Detected " << ocrWords.size() << " word(s)" << std::endl;
+  // ── Initialise Tesseract once for the entire check ────────────────────────
+  tesseract::TessBaseAPI *ocr = new tesseract::TessBaseAPI();
+  if (ocr->Init("C:/tessdata/tessdata", "eng") != 0 &&
+      ocr->Init(NULL, "eng") != 0) {
+    std::cerr << "checkImage: Cannot initialise Tesseract" << std::endl;
+    delete ocr;
+    return false;
+  }
+
+  // ── Step 1: Downscale image for anchor finding ────────────────────────────
+  // OCR cost scales with image area, so shrinking to ≤1500 px wide gives a
+  // large speedup while keeping anchor text readable.
+  constexpr int kAnchorMaxWidth = 1500;
+  double anchorScale = (image.cols > kAnchorMaxWidth)
+                           ? static_cast<double>(kAnchorMaxWidth) / image.cols
+                           : 1.0;
+  cv::Mat anchorImg;
+  if (anchorScale < 1.0)
+    cv::resize(image, anchorImg, cv::Size(), anchorScale, anchorScale,
+               cv::INTER_AREA);
+  else
+    anchorImg = image;
+
+  std::cerr << "checkImage: Anchor OCR on " << anchorImg.cols << "x"
+            << anchorImg.rows << " (scale=" << anchorScale << ")" << std::endl;
+  auto scaledWords = ocrDetectWords(anchorImg, ocr);
+
+  // Scale word coords back to full-resolution pixel space.
+  for (auto &w : scaledWords) {
+    w.x      = static_cast<int>(std::round(w.x      / anchorScale));
+    w.y      = static_cast<int>(std::round(w.y      / anchorScale));
+    w.width  = static_cast<int>(std::round(w.width  / anchorScale));
+    w.height = static_cast<int>(std::round(w.height / anchorScale));
+  }
+  std::cerr << "checkImage: Detected " << scaledWords.size()
+            << " word(s) for anchor matching" << std::endl;
 
   // ── Step 2: Solve crop rect via anchor matching ───────────────────────────
-  auto allPairs = findAllMatchedPairs(relMap.elements, 0, relMap.elements.size(), ocrWords);
+  auto allPairs = findAllMatchedPairs(relMap.elements, 0, relMap.elements.size(),
+                                     scaledWords);
   auto anchors  = findBestMatchedPairs(allPairs);
   std::cerr << "checkImage: " << anchors.size() << " anchor(s) (of "
             << allPairs.size() << " match(es))" << std::endl;
@@ -843,6 +895,8 @@ bool OCRAnalysis::checkImage(
   if (anchors.size() < 2 || !solveCropRectFromMatches(anchors, cropRect)) {
     std::cerr << "checkImage: Cannot solve crop rect – need ≥2 non-placeholder "
                  "text anchors in the image" << std::endl;
+    ocr->End();
+    delete ocr;
     return false;
   }
 
@@ -869,20 +923,17 @@ bool OCRAnalysis::checkImage(
             << ") " << cropRect.width << "x" << cropRect.height << std::endl;
 
   // ── Step 3: Check each text element ───────────────────────────────────────
-  // Strategy: primary check uses the global OCR word list (high quality).
-  // The element box is expanded 30 % on every side to absorb positional errors
-  // from an imperfect crop-rect transform.  If no match is found with the
-  // global words, a per-element OCR pass is run on the same ROI as a fallback
-  // (this rescues text whose global confidence was below the 30 % threshold,
-  // e.g. values on small sticker labels, without degrading quality for the
-  // elements where global OCR already works well).
+  // Primary: filter the global word list (from the downscaled OCR pass) by
+  // each element's ROI — no additional OCR needed for most elements.
+  // Fallback: if no match found in the global words, run a targeted ROI OCR
+  // on the full-resolution image using the already-initialised Tesseract
+  // instance (avoids language-data reload overhead).
   const cv::Rect imageRect(0, 0, image.cols, image.rows);
   bool allMatch = true;
 
   constexpr double kPadFraction = 0.30;
-  constexpr int    kMinOcrWidth = 400;  // upscale threshold for per-element OCR
+  constexpr int    kMinOcrWidth = 400;
 
-  // Helper: fuzzy match two normalised strings.
   auto fuzzyMatch = [](const std::string &normExp,
                        const std::string &normOcr) -> bool {
     if (normOcr.empty()) return false;
@@ -902,7 +953,6 @@ bool OCRAnalysis::checkImage(
     if (normExpected.empty()) continue;
 
     // Map relative centre/size → pixel bounding box.
-    // Placeholder elements get ×3.2 rightward width expansion (left edge fixed).
     double centreX = elem.relativeX     * cropRect.width  + cropRect.x;
     double centreY = elem.relativeY     * cropRect.height + cropRect.y;
     double pixW    = elem.relativeWidth  * cropRect.width;
@@ -927,9 +977,9 @@ bool OCRAnalysis::checkImage(
       continue;
     }
 
-    // ── Primary: collect global OCR words whose centre is inside the ROI ────
+    // ── Primary: filter global words (from downscaled pass) into ROI ─────
     std::vector<const OcrWord *> inBox;
-    for (const auto &w : ocrWords) {
+    for (const auto &w : scaledWords) {
       int cx = w.x + w.width  / 2;
       int cy = w.y + w.height / 2;
       if (roi.contains(cv::Point(cx, cy)))
@@ -945,9 +995,9 @@ bool OCRAnalysis::checkImage(
     std::string normOcr = normaliseForMatch(ocrText);
     bool match = fuzzyMatch(normExpected, normOcr);
 
-    // ── Fallback: per-element OCR when global gives no match ────────────────
+    // ── Fallback: targeted ROI OCR on full-resolution image ──────────────
     if (!match) {
-      cv::Mat roiMat  = image(roi);
+      cv::Mat roiMat = image(roi);
       cv::Mat ocrInput;
       if (roiMat.cols < kMinOcrWidth) {
         double scale = static_cast<double>(kMinOcrWidth) / roiMat.cols;
@@ -955,7 +1005,7 @@ bool OCRAnalysis::checkImage(
       } else {
         ocrInput = roiMat;
       }
-      auto roiWords = ocrDetectWords(ocrInput);
+      auto roiWords = ocrDetectWords(ocrInput, ocr, tesseract::PSM_SINGLE_BLOCK);
       std::sort(roiWords.begin(), roiWords.end(),
                 [](const OcrWord &a, const OcrWord &b) { return a.x < b.x; });
       std::string roiText;
@@ -980,6 +1030,8 @@ bool OCRAnalysis::checkImage(
     if (!match) allMatch = false;
   }
 
+  ocr->End();
+  delete ocr;
   return allMatch;
 }
 
