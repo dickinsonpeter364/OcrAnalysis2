@@ -386,6 +386,19 @@ static void addPDFElementsToMap(
  * @brief Match ALL eligible non-placeholder text elements in [fromIdx, toIdx)
  *        against OCR words. Returns every matched pair with its element index
  *        and OCR bounding box.
+ *
+ * Each unique normalised text is used at most once as an anchor (first PDF
+ * element wins for duplicate PDF texts; first matching OCR word wins for
+ * duplicate OCR detections).  This deduplication is intentional: labels
+ * frequently repeat the same field labels ("Ref.Code:", "Med.No.:") in
+ * multiple sticker copies, and including both copies with different OCR
+ * pixel positions would give the linear solver two contradictory constraints
+ * from physically different image regions, destabilising the crop-rect solve.
+ *
+ * The preferred anchor sources are elements whose text is unique in the PDF
+ * (appears only once), because those can be matched to a single OCR word
+ * unambiguously.  Duplicate-text elements are still included but only if they
+ * are the first element with that text.
  */
 static std::vector<MatchedPair>
 findAllMatchedPairs(const std::vector<OCRAnalysis::RelativeElement> &elements,
@@ -393,6 +406,23 @@ findAllMatchedPairs(const std::vector<OCRAnalysis::RelativeElement> &elements,
                     const std::vector<OcrWord> &ocrWords)
 {
   using RE = OCRAnalysis::RelativeElement;
+
+  // Pre-compute: count how many times each normalised text appears in the
+  // eligible element range.  Duplicate-text elements are poor anchor
+  // candidates because they are ambiguous — the same OCR word could belong
+  // to any of the repeated sections (e.g. two identical sticker copies).
+  // They are excluded from anchor matching so that only unambiguous,
+  // section-unique elements define the crop-rect transform.
+  std::unordered_map<std::string, int> normCount;
+  for (size_t i = fromIdx; i < toIdx; ++i) {
+    const auto &elem = elements[i];
+    if (elem.type != RE::TEXT) continue;
+    if (elem.text.find('<') != std::string::npos ||
+        elem.text.find('>') != std::string::npos) continue;
+    std::string norm = normaliseForMatch(elem.text);
+    if (norm.length() >= 2) normCount[norm]++;
+  }
+
   std::vector<MatchedPair> allMatches;
   std::set<std::string> seenTexts;
 
@@ -405,7 +435,8 @@ findAllMatchedPairs(const std::vector<OCRAnalysis::RelativeElement> &elements,
         elem.relativeY < 0.0 || elem.relativeY > 1.0) continue;
     std::string normPdf = normaliseForMatch(elem.text);
     if (normPdf.length() < 2) continue;
-    if (!seenTexts.insert(normPdf).second) continue;
+    if (!seenTexts.insert(normPdf).second) continue;   // skip duplicate texts
+    if (normCount[normPdf] > 1) continue;  // skip text shared across sections
 
     // Two-pass: prefer exact matches over substring/fuzzy so that a short
     // element ("Code:") doesn't steal an OCR word ("Ref.Code:") that belongs
@@ -430,7 +461,7 @@ findAllMatchedPairs(const std::vector<OCRAnalysis::RelativeElement> &elements,
       }
     }
     if (bestWord) {
-      std::cerr << "  Matched \"" << elem.text << "\" -> OCR \""
+      std::cerr << "  Matched \"" << elem.text << "\" [" << i << "] -> OCR \""
                 << bestWord->text << "\"  conf=" << bestWord->confidence << std::endl;
       MatchedPair mp;
       mp.elementIdx  = i;
@@ -452,7 +483,7 @@ findAllMatchedPairs(const std::vector<OCRAnalysis::RelativeElement> &elements,
  */
 static std::vector<MatchedPair>
 findBestMatchedPairs(const std::vector<MatchedPair> &allMatches,
-                     int maxMatches = 3)
+                     int maxMatches = 12)
 {
   constexpr double kYSpread = 0.05;
 
@@ -827,73 +858,105 @@ bool OCRAnalysis::checkImage(
             << ") " << cropRect.width << "x" << cropRect.height << std::endl;
 
   // ── Step 3: Check each text element ───────────────────────────────────────
+  // Strategy: primary check uses the global OCR word list (high quality).
+  // The element box is expanded 30 % on every side to absorb positional errors
+  // from an imperfect crop-rect transform.  If no match is found with the
+  // global words, a per-element OCR pass is run on the same ROI as a fallback
+  // (this rescues text whose global confidence was below the 30 % threshold,
+  // e.g. values on small sticker labels, without degrading quality for the
+  // elements where global OCR already works well).
   const cv::Rect imageRect(0, 0, image.cols, image.rows);
   bool allMatch = true;
+
+  constexpr double kPadFraction = 0.30;
+  constexpr int    kMinOcrWidth = 400;  // upscale threshold for per-element OCR
+
+  // Helper: fuzzy match two normalised strings.
+  auto fuzzyMatch = [](const std::string &normExp,
+                       const std::string &normOcr) -> bool {
+    if (normOcr.empty()) return false;
+    if (normExp == normOcr) return true;
+    if (normOcr.find(normExp) != std::string::npos) return true;
+    if (normExp.find(normOcr) != std::string::npos) return true;
+    int maxDist = std::max(1, static_cast<int>(normExp.length()) / 5);
+    return levenshtein(normExp, normOcr) <= maxDist;
+  };
 
   for (size_t i = 0; i < relMap.elements.size(); ++i) {
     const auto &elem = relMap.elements[i];
     if (elem.type != RE::TEXT) continue;
 
-    // Substitute placeholders into expected text
     std::string expected     = applyPlaceholders(elem.text, placeholders);
     std::string normExpected = normaliseForMatch(expected);
     if (normExpected.empty()) continue;
 
     // Map relative centre/size → pixel bounding box.
-    // Placeholder elements (original text contains '<'/'>')  get the same
-    // ×3.2 width expansion that drawElements applies in createRelativeMap.
-    // The expansion is rightward-only: the left edge is fixed at the
-    // original map position and the box grows to the right.
-    double centreX = elem.relativeX      * cropRect.width  + cropRect.x;
-    double centreY = elem.relativeY      * cropRect.height + cropRect.y;
+    // Placeholder elements get ×3.2 rightward width expansion (left edge fixed).
+    double centreX = elem.relativeX     * cropRect.width  + cropRect.x;
+    double centreY = elem.relativeY     * cropRect.height + cropRect.y;
     double pixW    = elem.relativeWidth  * cropRect.width;
     double pixH    = elem.relativeHeight * cropRect.height;
-    double leftX   = centreX - pixW / 2.0;  // top-left stays fixed
+    double leftX   = centreX - pixW / 2.0;
     double topY    = centreY - pixH / 2.0;
 
     bool isPlaceholder = elem.text.find('<') != std::string::npos ||
                          elem.text.find('>') != std::string::npos;
-    if (isPlaceholder)
-      pixW *= 3.2;
+    if (isPlaceholder) pixW *= 3.2;
 
-    cv::Rect box(static_cast<int>(std::round(leftX)),
-                 static_cast<int>(std::round(topY)),
-                 static_cast<int>(std::round(pixW)),
-                 static_cast<int>(std::round(pixH)));
-    cv::Rect clipped = box & imageRect;
-    if (clipped.area() == 0) {
+    int padX = std::max(4, static_cast<int>(std::round(pixW * kPadFraction)));
+    int padY = std::max(4, static_cast<int>(std::round(pixH * kPadFraction)));
+    cv::Rect roi(static_cast<int>(std::round(leftX))  - padX,
+                 static_cast<int>(std::round(topY))   - padY,
+                 static_cast<int>(std::round(pixW)) + 2 * padX,
+                 static_cast<int>(std::round(pixH)) + 2 * padY);
+    roi &= imageRect;
+    if (roi.area() == 0) {
       std::cerr << "checkImage: [" << i << "] \"" << elem.text
                 << "\" box out of image bounds – skipped" << std::endl;
       continue;
     }
 
-    // Collect OCR words whose centre falls within the (clipped) box, sorted
-    // left-to-right so multi-word elements are joined in reading order.
+    // ── Primary: collect global OCR words whose centre is inside the ROI ────
     std::vector<const OcrWord *> inBox;
     for (const auto &w : ocrWords) {
       int cx = w.x + w.width  / 2;
       int cy = w.y + w.height / 2;
-      if (clipped.contains(cv::Point(cx, cy)))
+      if (roi.contains(cv::Point(cx, cy)))
         inBox.push_back(&w);
     }
     std::sort(inBox.begin(), inBox.end(),
               [](const OcrWord *a, const OcrWord *b) { return a->x < b->x; });
-
     std::string ocrText;
     for (const auto *w : inBox) {
       if (!ocrText.empty()) ocrText += ' ';
       ocrText += w->text;
     }
     std::string normOcr = normaliseForMatch(ocrText);
+    bool match = fuzzyMatch(normExpected, normOcr);
 
-    // Match: exact normalised, then containment, then Levenshtein
-    bool match = (normExpected == normOcr);
-    if (!match)
-      match = normOcr.find(normExpected)     != std::string::npos ||
-              normExpected.find(normOcr)     != std::string::npos;
+    // ── Fallback: per-element OCR when global gives no match ────────────────
     if (!match) {
-      int maxDist = std::max(1, static_cast<int>(normExpected.length()) / 5);
-      match = levenshtein(normExpected, normOcr) <= maxDist;
+      cv::Mat roiMat  = image(roi);
+      cv::Mat ocrInput;
+      if (roiMat.cols < kMinOcrWidth) {
+        double scale = static_cast<double>(kMinOcrWidth) / roiMat.cols;
+        cv::resize(roiMat, ocrInput, cv::Size(), scale, scale, cv::INTER_CUBIC);
+      } else {
+        ocrInput = roiMat;
+      }
+      auto roiWords = ocrDetectWords(ocrInput);
+      std::sort(roiWords.begin(), roiWords.end(),
+                [](const OcrWord &a, const OcrWord &b) { return a.x < b.x; });
+      std::string roiText;
+      for (const auto &w : roiWords) {
+        if (!roiText.empty()) roiText += ' ';
+        roiText += w.text;
+      }
+      std::string normRoi = normaliseForMatch(roiText);
+      if (fuzzyMatch(normExpected, normRoi)) {
+        match   = true;
+        ocrText = roiText + " [roi]";
+      }
     }
 
     std::cerr << "checkImage: [" << i << "] \"" << elem.text << "\""
@@ -901,27 +964,9 @@ bool OCRAnalysis::checkImage(
               << " ocr=\"" << ocrText << "\""
               << " -> " << (match ? "OK" : "FAIL") << std::endl;
 
-    if (match) {
-      // Use the union of the OCR word bounding boxes for the green rectangle
-      // so it reflects the actual detected text extent, not the map estimate.
-      if (!inBox.empty()) {
-        int ox1 = inBox.front()->x;
-        int oy1 = inBox.front()->y;
-        int ox2 = inBox.front()->x + inBox.front()->width;
-        int oy2 = inBox.front()->y + inBox.front()->height;
-        for (const auto *w : inBox) {
-          ox1 = std::min(ox1, w->x);
-          oy1 = std::min(oy1, w->y);
-          ox2 = std::max(ox2, w->x + w->width);
-          oy2 = std::max(oy2, w->y + w->height);
-        }
-        cv::rectangle(image, cv::Rect(ox1, oy1, ox2 - ox1, oy2 - oy1),
-                      cv::Scalar(0, 255, 0), 2);
-      }
-    } else {
-      allMatch = false;
-      cv::rectangle(image, clipped, cv::Scalar(0, 0, 255), 2);
-    }
+    cv::rectangle(image, roi,
+                  match ? cv::Scalar(0, 255, 0) : cv::Scalar(0, 0, 255), 2);
+    if (!match) allMatch = false;
   }
 
   return allMatch;
