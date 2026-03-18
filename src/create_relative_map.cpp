@@ -841,20 +841,23 @@ bool OCRAnalysis::checkImage(
 
     // Map relative centre/size → pixel bounding box.
     // Placeholder elements (original text contains '<'/'>')  get the same
-    // ×3.2 width expansion that drawElements applies in createRelativeMap,
-    // so the ROI and drawn box match what is visible in the _relmap image.
+    // ×3.2 width expansion that drawElements applies in createRelativeMap.
+    // The expansion is rightward-only: the left edge is fixed at the
+    // original map position and the box grows to the right.
     double centreX = elem.relativeX      * cropRect.width  + cropRect.x;
     double centreY = elem.relativeY      * cropRect.height + cropRect.y;
     double pixW    = elem.relativeWidth  * cropRect.width;
     double pixH    = elem.relativeHeight * cropRect.height;
+    double leftX   = centreX - pixW / 2.0;  // top-left stays fixed
+    double topY    = centreY - pixH / 2.0;
 
     bool isPlaceholder = elem.text.find('<') != std::string::npos ||
                          elem.text.find('>') != std::string::npos;
     if (isPlaceholder)
       pixW *= 3.2;
 
-    cv::Rect box(static_cast<int>(std::round(centreX - pixW / 2.0)),
-                 static_cast<int>(std::round(centreY - pixH / 2.0)),
+    cv::Rect box(static_cast<int>(std::round(leftX)),
+                 static_cast<int>(std::round(topY)),
                  static_cast<int>(std::round(pixW)),
                  static_cast<int>(std::round(pixH)));
     cv::Rect clipped = box & imageRect;
