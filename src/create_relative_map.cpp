@@ -909,7 +909,7 @@ bool OCRAnalysis::checkImage(
       }
     } else {
       allMatch = false;
-      cv::rectangle(image, box, cv::Scalar(0, 0, 255), 2);
+      cv::rectangle(image, clipped, cv::Scalar(0, 0, 255), 2);
     }
   }
 
