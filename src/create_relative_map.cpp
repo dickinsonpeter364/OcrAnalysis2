@@ -890,7 +890,9 @@ bool OCRAnalysis::checkImage(
               << " ocr=\"" << ocrText << "\""
               << " -> " << (match ? "OK" : "FAIL") << std::endl;
 
-    if (!match) {
+    if (match) {
+      cv::rectangle(image, box, cv::Scalar(0, 255, 0), 2);
+    } else {
       allMatch = false;
       cv::rectangle(image, box, cv::Scalar(0, 0, 255), 2);
     }
