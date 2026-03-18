@@ -277,6 +277,16 @@ target_link_libraries(test_crop_label
         ocr_analysis
 )
 
+# Define the check image test executable
+add_executable(test_check_image
+    src/test_check_image.cpp
+)
+
+target_link_libraries(test_check_image
+    PRIVATE
+        ocr_analysis
+)
+
 # Optional: Install targets
 install(TARGETS ocr_analysis ocr_demo
     LIBRARY DESTINATION lib
