@@ -131,7 +131,7 @@ int main(int argc, char *argv[]) {
 
       auto relMapResult =
           analyzer.createRelativeMap(elements, photo, markToFile, doMark,
-                                     boundsMode, dpi, l2PdfPath);
+                                     pdfPath, dpi, l2PdfPath);
 
       if (!relMapResult.success) {
         std::cerr << "Error creating relative map: "

@@ -103,7 +103,7 @@ int main(int argc, char *argv[]) {
     std::cout << "\nBuilding relative map…\n";
     auto relMap = analyzer.createRelativeMap(
         l1Elements, photo, imagePath, /*markImage=*/false,
-        ocr::OCRAnalysis::RenderBoundsMode::USE_CROP_MARKS, 300.0, l2PdfPath);
+        l1PdfPath, 300.0, l2PdfPath);
 
     if (!relMap.success) {
       std::cerr << "Error building relative map: " << relMap.errorMessage

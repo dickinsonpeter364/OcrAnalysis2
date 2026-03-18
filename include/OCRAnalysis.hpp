@@ -746,7 +746,7 @@ public:
   RelativeMapResult createRelativeMap(
       const PDFElements &elements, const cv::Mat &image,
       const std::string &imageFilePath, bool markImage,
-      RenderBoundsMode boundsMode = RenderBoundsMode::USE_CROP_MARKS,
+      const std::string &l1PdfPath,
       double dpi = 300.0, const std::string &l2PdfPath = "");
 
   /**

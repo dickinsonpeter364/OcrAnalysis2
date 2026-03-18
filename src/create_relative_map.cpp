@@ -232,45 +232,75 @@ static BoundsResult computeBounds(const OCRAnalysis::PDFElements &elements,
   BoundsResult r;
 
   if (boundsMode == OCRAnalysis::RenderBoundsMode::USE_LARGEST_RECTANGLE) {
-    double largestArea = 0;
-    const OCRAnalysis::PDFRectangle *largestRect = nullptr;
+    // Use the bounding box of ALL detected rectangles in PDF y-up coordinates.
+    // This covers the full content area (e.g. both sticker sections) while
+    // excluding elements outside the sticker boundary (e.g. pull-tabs).
+    double rectMinX = std::numeric_limits<double>::max();
+    double rectMinY = std::numeric_limits<double>::max();
+    double rectMaxX = std::numeric_limits<double>::lowest();
+    double rectMaxY = std::numeric_limits<double>::lowest();
     for (const auto &rect : elements.rectangles) {
-      double area = rect.width * rect.height;
-      if (area > largestArea) { largestArea = area; largestRect = &rect; }
+      rectMinX = std::min(rectMinX, rect.x);
+      rectMinY = std::min(rectMinY, rect.y);
+      rectMaxX = std::max(rectMaxX, rect.x + rect.width);
+      rectMaxY = std::max(rectMaxY, rect.y + rect.height);
     }
 
-    if (largestRect == nullptr) {
-      if (!elements.images.empty()) {
-        double largestImageArea = 0.0;
-        const OCRAnalysis::PDFEmbeddedImage *largestImage = nullptr;
-        for (const auto &img : elements.images) {
-          double area = img.displayWidth * img.displayHeight;
-          if (area > largestImageArea) { largestImageArea = area; largestImage = &img; }
-        }
-        if (largestImage != nullptr) {
-          r.minX = largestImage->x;
-          r.minY = largestImage->y;
-          r.maxX = largestImage->x + largestImage->displayWidth;
-          r.maxY = largestImage->y + largestImage->displayHeight;
-          r.success = true;
-        } else {
-          r.errorMessage = "Could not find valid rectangle or image";
-        }
-      } else {
-        r.errorMessage = "No rectangles or images found for USE_LARGEST_RECTANGLE mode";
-      }
-    } else {
-      double rectTopLeftY    = largestRect->y;
-      double rectBottomLeftY = rectTopLeftY + largestRect->height;
-      r.minX = largestRect->x;
-      r.minY = elements.pageHeight - rectBottomLeftY;
-      r.maxX = largestRect->x + largestRect->width;
-      r.maxY = elements.pageHeight - rectTopLeftY;
+    if (rectMinX < std::numeric_limits<double>::max()) {
+      // Rectangles found: use their bounding box (PDF y-up coords).
+      r.minX = rectMinX;
+      r.minY = rectMinY;
+      r.maxX = rectMaxX;
+      r.maxY = rectMaxY;
       r.success = true;
+    } else if (!elements.images.empty()) {
+      // No rectangles: fall back to bounding box of all embedded images.
+      double imgMinX = std::numeric_limits<double>::max();
+      double imgMinY = std::numeric_limits<double>::max();
+      double imgMaxX = std::numeric_limits<double>::lowest();
+      double imgMaxY = std::numeric_limits<double>::lowest();
+      for (const auto &img : elements.images) {
+        imgMinX = std::min(imgMinX, img.x);
+        imgMinY = std::min(imgMinY, img.y);
+        imgMaxX = std::max(imgMaxX, img.x + img.displayWidth);
+        imgMaxY = std::max(imgMaxY, img.y + img.displayHeight);
+      }
+      r.minX = imgMinX;
+      r.minY = imgMinY;
+      r.maxX = imgMaxX;
+      r.maxY = imgMaxY;
+      r.success = true;
+    } else {
+      // Last resort: bounding box of all text elements (preciseX/Y, PDF y-up).
+      double txtMinX = std::numeric_limits<double>::max();
+      double txtMinY = std::numeric_limits<double>::max();
+      double txtMaxX = std::numeric_limits<double>::lowest();
+      double txtMaxY = std::numeric_limits<double>::lowest();
+      for (const auto &text : elements.textLines) {
+        if (isMostlyUnderscores(text.text)) continue;
+        double tx = (text.preciseWidth > 0) ? text.preciseX : text.boundingBox.x;
+        double ty = (text.preciseWidth > 0) ? text.preciseY : text.boundingBox.y;
+        double tw = (text.preciseWidth > 0) ? text.preciseWidth : text.boundingBox.width;
+        double th = (text.preciseWidth > 0) ? text.preciseHeight : text.boundingBox.height;
+        txtMinX = std::min(txtMinX, tx);
+        txtMinY = std::min(txtMinY, ty);
+        txtMaxX = std::max(txtMaxX, tx + tw);
+        txtMaxY = std::max(txtMaxY, ty + th);
+      }
+      if (txtMinX < std::numeric_limits<double>::max()) {
+        r.minX = txtMinX;
+        r.minY = txtMinY;
+        r.maxX = txtMaxX;
+        r.maxY = txtMaxY;
+        r.success = true;
+      } else {
+        r.errorMessage = "No rectangles, images or text found";
+      }
     }
 
   } else if (elements.linesBoundingBoxWidth > 0 &&
              elements.linesBoundingBoxHeight > 0) {
+    // Crop marks detected: use their bounding box (PDF y-up coords).
     r.minX = elements.linesBoundingBoxX;
     r.minY = elements.linesBoundingBoxY;
     r.maxX = elements.linesBoundingBoxX + elements.linesBoundingBoxWidth;
@@ -278,30 +308,8 @@ static BoundsResult computeBounds(const OCRAnalysis::PDFElements &elements,
     r.success = true;
 
   } else {
-    r.minX = std::numeric_limits<double>::max();
-    r.minY = std::numeric_limits<double>::max();
-    r.maxX = std::numeric_limits<double>::lowest();
-    r.maxY = std::numeric_limits<double>::lowest();
-
-    for (const auto &text : elements.textLines) {
-      if (isMostlyUnderscores(text.text)) continue;
-      r.minX = std::min(r.minX, static_cast<double>(text.boundingBox.x));
-      r.minY = std::min(r.minY, static_cast<double>(text.boundingBox.y));
-      r.maxX = std::max(r.maxX, static_cast<double>(text.boundingBox.x + text.boundingBox.width));
-      r.maxY = std::max(r.maxY, static_cast<double>(text.boundingBox.y + text.boundingBox.height));
-    }
-    for (const auto &img : elements.images) {
-      r.minX = std::min(r.minX, img.x);
-      r.minY = std::min(r.minY, img.y);
-      r.maxX = std::max(r.maxX, img.x + img.displayWidth);
-      r.maxY = std::max(r.maxY, img.y + img.displayHeight);
-    }
-
-    if (r.minX == std::numeric_limits<double>::max()) {
-      r.errorMessage = "No elements found to create relative map";
-    } else {
-      r.success = true;
-    }
+    // USE_CROP_MARKS requested but no crop marks found.
+    r.errorMessage = "No crop mark lines found";
   }
 
   return r;
@@ -338,11 +346,8 @@ static void addPDFElementsToMap(
     elem.relativeX      = (tX - b.minX + tW / 2.0) / bW;
     elem.relativeY      = (topLeftY + tH / 2.0)     / bH;
 
-    double left   = elem.relativeX - elem.relativeWidth  / 2.0;
-    double right  = elem.relativeX + elem.relativeWidth  / 2.0;
-    double top    = elem.relativeY - elem.relativeHeight / 2.0;
-    double bottom = elem.relativeY + elem.relativeHeight / 2.0;
-    if (right < 0.0 || left > 1.0 || bottom < 0.0 || top > 1.0) continue;
+    if (elem.relativeX < 0.0 || elem.relativeX > 1.0 ||
+        elem.relativeY < 0.0 || elem.relativeY > 1.0) continue;
 
     elem.text      = text.text;
     elem.fontName  = text.fontName;
@@ -370,11 +375,8 @@ static void addPDFElementsToMap(
     elem.relativeX      = (img.x - b.minX + aabbW / 2.0) / bW;
     elem.relativeY      = (imgTopLeftY      + aabbH / 2.0) / bH;
 
-    double left   = elem.relativeX - elem.relativeWidth  / 2.0;
-    double right  = elem.relativeX + elem.relativeWidth  / 2.0;
-    double top    = elem.relativeY - elem.relativeHeight / 2.0;
-    double bottom = elem.relativeY + elem.relativeHeight / 2.0;
-    if (right < 0.0 || left > 1.0 || bottom < 0.0 || top > 1.0) continue;
+    if (elem.relativeX < 0.0 || elem.relativeX > 1.0 ||
+        elem.relativeY < 0.0 || elem.relativeY > 1.0) continue;
 
     outElements.push_back(elem);
   }
@@ -577,23 +579,35 @@ OCRAnalysis::RelativeMapResult
 OCRAnalysis::createRelativeMap(const PDFElements &elements,
                                const cv::Mat &image,
                                const std::string &imageFilePath, bool markImage,
-                               RenderBoundsMode boundsMode, double dpi,
+                               const std::string &l1PdfPath, double dpi,
                                const std::string &l2PdfPath) {
   OCRAnalysis::RelativeMapResult result;
 
   try {
-    // ── L1: compute bounds and relative elements ──────────────────────────────
-    // When two PDFs are supplied: first is strictly L1 (largest rectangle).
-    // When only one PDF is supplied: auto-detect — try crop marks first,
-    // fall back to largest rectangle so it works for either PDF type.
-    BoundsResult l1Bounds;
-    if (!l2PdfPath.empty()) {
-      l1Bounds = computeBounds(elements, boundsMode);
+    // ── Determine bounds mode from L1 filename ────────────────────────────────
+    std::string l1Stem =
+        std::filesystem::path(l1PdfPath).filename().string();
+    // Case-insensitive prefix check
+    auto startsWithCI = [](const std::string &s, const char *prefix) {
+      size_t plen = std::strlen(prefix);
+      if (s.size() < plen) return false;
+      for (size_t i = 0; i < plen; ++i)
+        if (std::tolower((unsigned char)s[i]) != prefix[i]) return false;
+      return true;
+    };
+    RenderBoundsMode l1Mode;
+    if (startsWithCI(l1Stem, "l1")) {
+      l1Mode = RenderBoundsMode::USE_LARGEST_RECTANGLE;
+    } else if (startsWithCI(l1Stem, "l2")) {
+      l1Mode = RenderBoundsMode::USE_CROP_MARKS;
     } else {
-      l1Bounds = computeBounds(elements, RenderBoundsMode::USE_CROP_MARKS);
-      if (!l1Bounds.success)
-        l1Bounds = computeBounds(elements, boundsMode);
+      result.errorMessage =
+          "PDF filename must begin with 'L1' or 'L2': " + l1Stem;
+      return result;
     }
+
+    // ── L1: compute bounds and relative elements ──────────────────────────────
+    BoundsResult l1Bounds = computeBounds(elements, l1Mode);
     if (!l1Bounds.success) {
       result.errorMessage = l1Bounds.errorMessage;
       return result;
@@ -623,11 +637,8 @@ OCRAnalysis::createRelativeMap(const PDFElements &elements,
         std::cerr << "Warning: Could not extract L2 elements: "
                   << l2Elements.errorMessage << std::endl;
       } else {
-        // Prefer crop-marks bounds for L2 if available; only fall back to
-        // the caller's boundsMode if the PDF has no crop-mark lines.
+        // L2 PDFs always use crop marks for bounds.
         l2Bounds = computeBounds(l2Elements, RenderBoundsMode::USE_CROP_MARKS);
-        if (!l2Bounds.success)
-          l2Bounds = computeBounds(l2Elements, boundsMode);
         if (!l2Bounds.success) {
           std::cerr << "Warning: Could not compute L2 bounds: "
                     << l2Bounds.errorMessage << std::endl;
