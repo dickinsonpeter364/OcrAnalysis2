@@ -891,7 +891,22 @@ bool OCRAnalysis::checkImage(
               << " -> " << (match ? "OK" : "FAIL") << std::endl;
 
     if (match) {
-      cv::rectangle(image, box, cv::Scalar(0, 255, 0), 2);
+      // Use the union of the OCR word bounding boxes for the green rectangle
+      // so it reflects the actual detected text extent, not the map estimate.
+      if (!inBox.empty()) {
+        int ox1 = inBox.front()->x;
+        int oy1 = inBox.front()->y;
+        int ox2 = inBox.front()->x + inBox.front()->width;
+        int oy2 = inBox.front()->y + inBox.front()->height;
+        for (const auto *w : inBox) {
+          ox1 = std::min(ox1, w->x);
+          oy1 = std::min(oy1, w->y);
+          ox2 = std::max(ox2, w->x + w->width);
+          oy2 = std::max(oy2, w->y + w->height);
+        }
+        cv::rectangle(image, cv::Rect(ox1, oy1, ox2 - ox1, oy2 - oy1),
+                      cv::Scalar(0, 255, 0), 2);
+      }
     } else {
       allMatch = false;
       cv::rectangle(image, box, cv::Scalar(0, 0, 255), 2);
