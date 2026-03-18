@@ -839,16 +839,24 @@ bool OCRAnalysis::checkImage(
     std::string normExpected = normaliseForMatch(expected);
     if (normExpected.empty()) continue;
 
-    // Map relative centre/size → pixel bounding box
+    // Map relative centre/size → pixel bounding box.
+    // Placeholder elements (original text contains '<'/'>')  get the same
+    // ×3.2 width expansion that drawElements applies in createRelativeMap,
+    // so the ROI and drawn box match what is visible in the _relmap image.
     double centreX = elem.relativeX      * cropRect.width  + cropRect.x;
     double centreY = elem.relativeY      * cropRect.height + cropRect.y;
-    double halfW   = elem.relativeWidth  * cropRect.width  / 2.0;
-    double halfH   = elem.relativeHeight * cropRect.height / 2.0;
+    double pixW    = elem.relativeWidth  * cropRect.width;
+    double pixH    = elem.relativeHeight * cropRect.height;
 
-    cv::Rect box(static_cast<int>(std::round(centreX - halfW)),
-                 static_cast<int>(std::round(centreY - halfH)),
-                 static_cast<int>(std::round(halfW * 2.0)),
-                 static_cast<int>(std::round(halfH * 2.0)));
+    bool isPlaceholder = elem.text.find('<') != std::string::npos ||
+                         elem.text.find('>') != std::string::npos;
+    if (isPlaceholder)
+      pixW *= 3.2;
+
+    cv::Rect box(static_cast<int>(std::round(centreX - pixW / 2.0)),
+                 static_cast<int>(std::round(centreY - pixH / 2.0)),
+                 static_cast<int>(std::round(pixW)),
+                 static_cast<int>(std::round(pixH)));
     cv::Rect clipped = box & imageRect;
     if (clipped.area() == 0) {
       std::cerr << "checkImage: [" << i << "] \"" << elem.text
