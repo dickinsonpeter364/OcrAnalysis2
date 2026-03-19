@@ -714,6 +714,12 @@ public:
     double boundsY = 0.0;      ///< Y position of bounds in PDF points
     double boundsWidth = 0.0;  ///< Width of bounds in PDF points
     double boundsHeight = 0.0; ///< Height of bounds in PDF points
+
+    // Crop rect: maps relative [0,1] coordinates to pixel coordinates in the
+    // reference image supplied to createRelativeMap.  Used by checkImage to
+    // locate each element's region without repeating anchor OCR.
+    int  cropX = 0, cropY = 0, cropWidth = 0, cropHeight = 0;
+    bool hasCropRect = false;
   };
 
   /**
@@ -774,6 +780,11 @@ public:
    */
   bool checkImage(
       const RelativeMapResult &relMap, cv::Mat &image,
+      const std::vector<std::pair<std::string, std::string>> &placeholders);
+
+  /// Overload that uses the map stored by the last call to createRelativeMap.
+  bool checkImage(
+      cv::Mat &image,
       const std::vector<std::pair<std::string, std::string>> &placeholders);
 
   /**
@@ -911,6 +922,9 @@ private:
       m_tesseract;    ///< Tesseract API instance
   OCRConfig m_config; ///< Current configuration
   bool m_initialized; ///< Initialization state
+
+  /// Stores the result of the most recent successful createRelativeMap call.
+  static RelativeMapResult s_lastRelativeMap;
 };
 
 } // namespace ocr

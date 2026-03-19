@@ -186,6 +186,10 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
       <Project>{16C471D4-54F4-34B1-A482-36B45576EF70}</Project>
       <Name>test_bounds_modes</Name>
     </ProjectReference>
+    <ProjectReference Include="C:\OcrAnalysis\test_check_image.vcxproj">
+      <Project>{CA52DB0A-EBD1-3728-8137-AD11D6A87924}</Project>
+      <Name>test_check_image</Name>
+    </ProjectReference>
     <ProjectReference Include="C:\OcrAnalysis\test_cleanup_image.vcxproj">
       <Project>{FB68C2CC-9C5A-3EB8-938F-CF4DD8FBD998}</Project>
       <Name>test_cleanup_image</Name>

@@ -1,5 +1,7 @@
 #include "OCRAnalysis.hpp"
+#include <chrono>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -19,6 +21,12 @@ static bool isPdfFile(const std::string &s) {
 }
 
 int main(int argc, char *argv[]) {
+#ifdef NDEBUG
+  // Release mode: suppress all diagnostic output from the library
+  std::ofstream devNull("NUL");
+  std::cerr.rdbuf(devNull.rdbuf());
+#endif
+
   if (argc < 3) {
     std::cerr
         << "Usage: " << argv[0]
@@ -79,7 +87,9 @@ int main(int argc, char *argv[]) {
     }
 
     // ── Extract L1 elements ───────────────────────────────────────────────
+#ifndef NDEBUG
     std::cout << "Extracting elements from L1 PDF: " << l1PdfPath << "\n";
+#endif
     ocr::OCRAnalysis analyzer;
     auto l1Elements = analyzer.extractPDFElements(l1PdfPath);
     if (!l1Elements.success) {
@@ -87,20 +97,28 @@ int main(int argc, char *argv[]) {
                 << "\n";
       return 1;
     }
+#ifndef NDEBUG
     std::cout << "  Text lines: " << l1Elements.textLineCount
               << "  Images: " << l1Elements.imageCount << "\n";
+#endif
 
     // ── Load photo ────────────────────────────────────────────────────────
+#ifndef NDEBUG
     std::cout << "Loading image: " << imagePath << "\n";
+#endif
     cv::Mat photo = cv::imread(imagePath);
     if (photo.empty()) {
       std::cerr << "Error: could not load image: " << imagePath << "\n";
       return 1;
     }
+#ifndef NDEBUG
     std::cout << "  " << photo.cols << " x " << photo.rows << " px\n";
+#endif
 
     // ── Build relative map (no marking at this stage) ─────────────────────
+#ifndef NDEBUG
     std::cout << "\nBuilding relative map…\n";
+#endif
     auto relMap = analyzer.createRelativeMap(
         l1Elements, photo, imagePath, /*markImage=*/false,
         l1PdfPath, 300.0, l2PdfPath);
@@ -111,6 +129,7 @@ int main(int argc, char *argv[]) {
       return 1;
     }
 
+#ifndef NDEBUG
     std::cout << "  Bounds: (" << relMap.boundsX << ", " << relMap.boundsY
               << ")  " << relMap.boundsWidth << " x " << relMap.boundsHeight
               << " pt\n";
@@ -124,23 +143,30 @@ int main(int argc, char *argv[]) {
       std::cout << "\n";
     }
 
-    // ── Run check ─────────────────────────────────────────────────────────
     std::cout << "Checking image…\n\n";
-    bool ok = analyzer.checkImage(relMap, photo, placeholders);
+#endif
+
+    // ── Run check ─────────────────────────────────────────────────────────
+    auto t0 = std::chrono::steady_clock::now();
+    bool ok = analyzer.checkImage(photo, placeholders);
+    auto t1 = std::chrono::steady_clock::now();
+    double checkMs = std::chrono::duration<double, std::milli>(t1 - t0).count();
 
     // ── Save annotated output ─────────────────────────────────────────────
     std::filesystem::path imgPath(imagePath);
     std::string outputPath = imgPath.parent_path().string() + "/" +
                              imgPath.stem().string() + "_checked" +
                              imgPath.extension().string();
-    if (cv::imwrite(outputPath, photo))
-      std::cout << "\nAnnotated image saved: " << outputPath << "\n";
-    else
-      std::cerr << "\nWarning: could not save annotated image: " << outputPath
-                << "\n";
+    cv::imwrite(outputPath, photo);
 
     // ── Result ────────────────────────────────────────────────────────────
+#ifdef NDEBUG
+    std::cout << checkMs << " ms  " << (ok ? "PASS" : "FAIL") << "\n";
+#else
+    std::cout << "\ncheckImage took " << checkMs << " ms\n";
+    std::cout << "\nAnnotated image saved: " << outputPath << "\n";
     std::cout << "\n=== Result: " << (ok ? "PASS" : "FAIL") << " ===\n";
+#endif
     return ok ? 0 : 2; // exit 0 = pass, 2 = check failed (1 = usage/error)
 
   } catch (const std::exception &e) {
