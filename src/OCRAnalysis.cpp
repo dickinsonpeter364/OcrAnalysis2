@@ -243,11 +243,23 @@ OCRResult OCRAnalysis::extractTextFromPDF(const std::string &pdfPath,
       dispW = mb->x2 - mb->x1;
       dispH = mb->y2 - mb->y1;
     }
-    std::cerr << "DEBUG: extractTextFromPDF pageRotate=" << pageRotate
-              << " dispW=" << dispW << " dispH=" << dispH << std::endl;
+
+    // TextOutputDev subclass that suppresses rendering-mode-3 (invisible) text.
+    // When state->getRender()==3 no glyph is drawn, so the word is never added
+    // to the TextPage word list — eliminating hidden-text false detections.
+    struct VisibleTextOutputDev : public TextOutputDev {
+      using TextOutputDev::TextOutputDev;
+      void drawChar(GfxState *state, double x, double y, double dx, double dy,
+                    double originX, double originY, CharCode c, int nBytes,
+                    const Unicode *u, int uLen) override {
+        if (state->getRender() == 3) return; // invisible (glyphless) — skip
+        TextOutputDev::drawChar(state, x, y, dx, dy, originX, originY,
+                                c, nBytes, u, uLen);
+      }
+    };
 
     // Run TextOutputDev through the same displayPage used by line extraction.
-    TextOutputDev textOut(nullptr, true, 0, false, false);
+    VisibleTextOutputDev textOut(nullptr, true, 0, false, false);
     doc->displayPage(&textOut, 1, 72, 72, 0 /*use PDF rotation*/, false, true,
                      false);
     TextPage *textPage = textOut.takeText();
@@ -345,6 +357,55 @@ OCRResult OCRAnalysis::extractTextFromPDF(const std::string &pdfPath,
       }
     }
     textPage->decRefCnt();
+
+    // Filter out text that is covered by subsequent opaque drawing (e.g. a
+    // white rectangle painted over hidden template text).  Rasterize the page
+    // at 72 DPI and discard any word whose bounding box has no dark pixels.
+    {
+      constexpr double kRasterDpi  = 72.0;
+      constexpr double kScale      = kRasterDpi / 72.0; // == 1.0
+      constexpr int    kDarkThresh = 600; // sum R+G+B < this → "dark"
+      // Note: at 72 DPI antialiased rendering, dark text on white has
+      // minSum in the range 270-360.  Completely hidden text (covered by
+      // opaque white shape) has minSum = 765 (pure white).  600 sits safely
+      // between the two populations.
+
+      SplashColor white = {255, 255, 255};
+      SplashOutputDev *sp = new SplashOutputDev(splashModeRGB8, 4, false, white);
+      sp->startDoc(doc.get());
+      doc->displayPage(sp, 1, kRasterDpi, kRasterDpi, 0, false, true, false);
+      SplashBitmap *bmp = sp->getBitmap();
+      const int bmpW = bmp->getWidth(), bmpH = bmp->getHeight();
+      const int rowStride = bmp->getRowSize();
+      const unsigned char *data = bmp->getDataPtr();
+
+      pageRegions.erase(
+        std::remove_if(pageRegions.begin(), pageRegions.end(),
+          [&](const TextRegion &tr) {
+            // Convert PDF y-up bottom-left coords to pixel top-left.
+            int px = static_cast<int>(tr.preciseX * kScale);
+            int py = static_cast<int>((dispH - tr.preciseY - tr.preciseHeight) * kScale);
+            int pw = std::max(1, static_cast<int>(std::ceil(tr.preciseWidth  * kScale)));
+            int ph = std::max(1, static_cast<int>(std::ceil(tr.preciseHeight * kScale)));
+            px = std::max(0, std::min(px, bmpW - 1));
+            py = std::max(0, std::min(py, bmpH - 1));
+            pw = std::min(pw, bmpW - px);
+            ph = std::min(ph, bmpH - py);
+            for (int sy = py; sy < py + ph; ++sy) {
+              const unsigned char *row = data + sy * rowStride + px * 3;
+              for (int sx = 0; sx < pw; ++sx, row += 3) {
+                if (static_cast<int>(row[0]) + row[1] + row[2] < kDarkThresh)
+                  return false; // dark pixel found → keep this word
+              }
+            }
+            std::cerr << "Filtered invisible text \"" << tr.text
+                      << "\" (covered by opaque shape in PDF)" << std::endl;
+            return true; // all white → hidden by overlapping shape
+          }),
+        pageRegions.end());
+
+      delete sp;
+    }
 
     // Group words into text lines if requested.
     if (level == PDFExtractionLevel::Word || pageRegions.empty()) {
@@ -3046,7 +3107,10 @@ OCRAnalysis::extractPDFElements(const std::string &pdfPath, double minRectSize,
                            static_cast<int>(std::ceil(lx2 - lx)),
                            static_cast<int>(std::ceil(ly2 - ly)));
               tr.preciseX = lx;
-              tr.preciseY = ly;
+              // ly/ly2 are screen-top/bottom y (y-down). Convert to PDF y-up
+              // bottom edge to match how regular text stores preciseY, so that
+              // addPDFElementsToMap applies the correct coordinate transform.
+              tr.preciseY = result.pageHeight - ly2;
               tr.preciseWidth = lx2 - lx;
               tr.preciseHeight = ly2 - ly;
               tr.text = lineText;

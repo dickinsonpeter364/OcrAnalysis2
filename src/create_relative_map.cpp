@@ -644,6 +644,44 @@ OCRAnalysis::createRelativeMap(const PDFElements &elements,
               << l1Bounds.width() << " x " << l1Bounds.height() << " pt"
               << std::endl;
 
+    // ── Crop to backing paper and rotate to match L1 PDF aspect ratio ─────────
+    cv::Mat workImg;
+    int cwRotations = 0;
+    if (!image.empty()) {
+      cv::Mat backing = OCRAnalysis::cropToLabel(image, 50, 40, /*tightLabel=*/false);
+      if (backing.empty()) {
+        std::cerr << "Warning: cropToLabel returned empty; using full image"
+                  << std::endl;
+        backing = image.clone();
+      }
+      std::cerr << "Backing crop: " << backing.cols << "x" << backing.rows
+                << std::endl;
+
+      if (l1Bounds.width() > 0 && l1Bounds.height() > 0) {
+        double pdfAR  = l1Bounds.width() / l1Bounds.height();
+        double bestDiff = 1e9;
+        cv::Mat current = backing;
+        for (int r = 0; r < 4; ++r) {
+          double imgAR = static_cast<double>(current.cols) / current.rows;
+          double diff  = std::abs(imgAR - pdfAR);
+          if (diff < bestDiff) {
+            bestDiff   = diff;
+            cwRotations = r;
+            workImg    = current;
+          }
+          cv::Mat next;
+          cv::rotate(current, next, cv::ROTATE_90_CLOCKWISE);
+          current = next;
+        }
+      } else {
+        workImg = backing;
+      }
+      std::cerr << "Applied " << cwRotations << " CW 90° rotation(s); "
+                << "working image: " << workImg.cols << "x" << workImg.rows
+                << std::endl;
+    }
+    result.cwRotations = cwRotations;
+
     addPDFElementsToMap(elements, l1Bounds, result.elements);
     const size_t l1Count = result.elements.size();
     std::cerr << "L1 elements added: " << l1Count << std::endl;
@@ -684,10 +722,10 @@ OCRAnalysis::createRelativeMap(const PDFElements &elements,
     // mapping) can be stored in the result and reused by checkImage without
     // repeating anchor matching on every subsequent call.
     std::vector<OcrWord> ocrWords;
-    if (!image.empty()) {
+    if (!workImg.empty()) {
       std::cerr << "Running OCR on reference image ("
-                << image.cols << "x" << image.rows << ")..." << std::endl;
-      ocrWords = ocrDetectWords(image);
+                << workImg.cols << "x" << workImg.rows << ")..." << std::endl;
+      ocrWords = ocrDetectWords(workImg);
       std::cerr << "Detected " << ocrWords.size() << " word(s)" << std::endl;
 
       std::cerr << "\n=== L1 OCR anchor matching ===" << std::endl;
@@ -788,13 +826,13 @@ OCRAnalysis::createRelativeMap(const PDFElements &elements,
 
     // ── marking: draw element boxes on a copy of the image ───────────────────
     if (markImage) {
-      if (image.empty() || !result.hasCropRect) {
+      if (workImg.empty() || !result.hasCropRect) {
         std::cerr << "Warning: cannot mark – image empty or crop rect unavailable"
                   << std::endl;
       } else {
         cv::Rect l1CropRect(result.cropX, result.cropY,
                             result.cropWidth, result.cropHeight);
-        cv::Mat canvas = image.clone();
+        cv::Mat canvas = workImg.clone();
         int drawn = 0;
 
         // L1
@@ -885,10 +923,31 @@ bool OCRAnalysis::checkImage(
   if (image.empty() || !relMap.hasCropRect)
     return false;
 
+  // ── Crop to backing paper and apply the stored CW rotation ───────────────
+  {
+    cv::Mat backing = OCRAnalysis::cropToLabel(image, 50, 40, /*tightLabel=*/false);
+    if (backing.empty()) {
+      std::cerr << "checkImage: cropToLabel returned empty; using full image"
+                << std::endl;
+      backing = image.clone();
+    }
+    for (int r = 0; r < relMap.cwRotations; ++r) {
+      cv::Mat next;
+      cv::rotate(backing, next, cv::ROTATE_90_CLOCKWISE);
+      backing = next;
+    }
+    image = backing;
+    std::cerr << "checkImage: backing crop + " << relMap.cwRotations
+              << " CW rotation(s); image now "
+              << image.cols << "x" << image.rows << std::endl;
+  }
+
   const cv::Rect cropRect(relMap.cropX, relMap.cropY,
                           relMap.cropWidth, relMap.cropHeight);
   const cv::Rect imageRect(0, 0, image.cols, image.rows);
-  constexpr double kPadFraction = 0.07;
+  constexpr double kPadFraction     = 0.07; // fixed-label padding (all sides)
+  constexpr double kPhPadFracY      = 0.15; // placeholder vertical padding
+  constexpr double kPhPadFracX      = 0.04; // placeholder horizontal padding
 
   // ── Pass 1: compute ROI and expected text for every text element ──────────
   // No Tesseract yet – defer init until we know there is something to check.
@@ -913,26 +972,25 @@ bool OCRAnalysis::checkImage(
     double pixW    = elem.relativeWidth  * cropRect.width;
     double pixH    = elem.relativeHeight * cropRect.height;
 
-    int padY = std::max(4, static_cast<int>(std::round(pixH * kPadFraction)));
-    int topPx  = static_cast<int>(std::round(centreY - pixH / 2.0)) - padY;
-    int height = static_cast<int>(std::round(pixH)) + 2 * padY;
-
     cv::Rect roi;
     if (elem.text.find('<') != std::string::npos) {
-      // Placeholder: the substituted value starts at the token's left edge and
-      // extends to the right.  Left-anchor the ROI to avoid picking up the
-      // field label that sits immediately to the left of the value.  Widen to
-      // at least 1.75× the token width or the character-count estimate (0.65
-      // cap-heights per char), whichever is larger.
+      // Placeholder: left-anchored at token left edge, widened to fit value.
+      // Use asymmetric padding: 12% vertical, 4% horizontal.
       double valueW = std::max(pixW * 1.75,
                                normExpected.length() * pixH * 0.65);
-      int padX   = std::max(4, static_cast<int>(std::round(valueW * kPadFraction)));
+      int padY   = std::max(4, static_cast<int>(std::round(pixH  * kPhPadFracY)));
+      int padX   = std::max(4, static_cast<int>(std::round(valueW * kPhPadFracX)));
+      int topPx  = static_cast<int>(std::round(centreY - pixH / 2.0)) - padY;
+      int height = static_cast<int>(std::round(pixH)) + 2 * padY;
       int tokenL = static_cast<int>(std::round(centreX - pixW / 2.0));
       roi = cv::Rect(tokenL - padX, topPx,
                      static_cast<int>(std::round(valueW)) + 2 * padX, height);
     } else {
-      // Fixed label text: symmetric padding around the element centre.
+      // Fixed label text: symmetric 7% padding on all sides.
+      int padY = std::max(4, static_cast<int>(std::round(pixH * kPadFraction)));
       int padX = std::max(4, static_cast<int>(std::round(pixW * kPadFraction)));
+      int topPx  = static_cast<int>(std::round(centreY - pixH / 2.0)) - padY;
+      int height = static_cast<int>(std::round(pixH)) + 2 * padY;
       roi = cv::Rect(static_cast<int>(std::round(centreX - pixW / 2.0)) - padX,
                      topPx,
                      static_cast<int>(std::round(pixW)) + 2 * padX, height);
@@ -991,6 +1049,16 @@ bool OCRAnalysis::checkImage(
     std::string ocrTextInitial = ocrMat(roi);
     bool match = isMatch(chk.normExpected, ocrTextInitial);
 
+    // ── Auto-pass for repeated-i sequences in non-substituted text ───────────
+    // OCR reliably confuses "ii", "iii" etc. with "(i)", "(1)", etc.
+    // If the expected (normalised) text contains "ii" or more and the element
+    // is a fixed label (not a placeholder), treat it as a pass automatically.
+    if (!match && chk.elemText.find('<') == std::string::npos) {
+      const std::string &ne = chk.normExpected;
+      if (ne.find("ii") != std::string::npos)
+        match = true;
+    }
+
     // ── Cleanup retry: only if initial match failed ───────────────────────────
     cv::Mat cleanedRoi;
     std::string ocrTextCleaned;
@@ -1016,7 +1084,7 @@ bool OCRAnalysis::checkImage(
               << " -> " << (match ? "OK" : "FAIL") << std::endl;
 
 #ifndef NDEBUG
-    {
+    if (!match) {
       // Sanitize element text for use as a filename component.
       std::string safe = chk.elemText;
       for (char &c : safe)

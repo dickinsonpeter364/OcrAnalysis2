@@ -720,6 +720,10 @@ public:
     // locate each element's region without repeating anchor OCR.
     int  cropX = 0, cropY = 0, cropWidth = 0, cropHeight = 0;
     bool hasCropRect = false;
+
+    /// Number of clockwise 90° rotations applied to the reference image
+    /// before OCR anchor matching.  checkImage applies the same rotation.
+    int cwRotations = 0;
   };
 
   /**
