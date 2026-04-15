@@ -27,8 +27,8 @@ endif()
 
 # ZXing-cpp for barcode / DataMatrix detection
 set(ZXING_SOURCE_DIR "C:/zxing-cpp")
-set(ZXING_LIB_DIR "${ZXING_SOURCE_DIR}/build/core/Debug")
-if(EXISTS "${ZXING_LIB_DIR}/ZXing.lib")
+set(ZXING_LIB_DIR "${ZXING_SOURCE_DIR}/build/core")
+if(EXISTS "${ZXING_LIB_DIR}/Debug/ZXing.lib")
     message(STATUS "ZXing found at ${ZXING_SOURCE_DIR}")
     set(ZXING_FOUND TRUE)
 else()
@@ -72,29 +72,38 @@ if(ZXING_FOUND)
     target_compile_definitions(ocr_analysis PUBLIC HAVE_ZXING)
 endif()
 
+# vcpkg release/debug library directories
+set(VCPKG_REL_LIBDIR "C:/vcpkg/installed/x64-windows/lib")
+set(VCPKG_DBG_LIBDIR "C:/vcpkg/installed/x64-windows/debug/lib")
+
 target_link_libraries(ocr_analysis
     PUBLIC
         ${OpenCV_LIBS}
-        ${TESSERACT_LIBRARIES}
-        ${LEPTONICA_LIBRARIES}
-        ${POPPLER_CPP_LIBRARIES}
-        ${POPPLER_LIBRARIES}
+        # Tesseract + Leptonica: release vs debug names differ
+        $<$<CONFIG:Debug>:tesseract55d>
+        $<$<NOT:$<CONFIG:Debug>>:tesseract55>
+        $<$<CONFIG:Debug>:leptonica-1.85.0d>
+        $<$<NOT:$<CONFIG:Debug>>:leptonica-1.85.0>
+        # Poppler: same names in both configs
+        poppler-cpp
+        poppler
 )
 
 if(CAIRO_FOUND)
-    target_link_libraries(ocr_analysis PUBLIC ${CAIRO_LIBRARIES})
+    target_link_libraries(ocr_analysis PUBLIC cairo)
 endif()
 
 if(ZXING_FOUND)
-    target_link_libraries(ocr_analysis PUBLIC ${ZXING_LIB_DIR}/ZXing.lib)
+    target_link_libraries(ocr_analysis PUBLIC
+        $<$<CONFIG:Debug>:${ZXING_LIB_DIR}/Debug/ZXing.lib>
+        $<$<NOT:$<CONFIG:Debug>>:${ZXING_LIB_DIR}/Release/ZXing.lib>
+    )
 endif()
 
 target_link_directories(ocr_analysis
     PUBLIC
-        ${TESSERACT_LIBRARY_DIRS}
-        ${LEPTONICA_LIBRARY_DIRS}
-        ${POPPLER_CPP_LIBRARY_DIRS}
-        ${POPPLER_LIBRARY_DIRS}
+        $<$<CONFIG:Debug>:${VCPKG_DBG_LIBDIR}>
+        $<$<NOT:$<CONFIG:Debug>>:${VCPKG_REL_LIBDIR}>
 )
 
 # Define the main executable
@@ -283,6 +292,16 @@ add_executable(test_check_image
 )
 
 target_link_libraries(test_check_image
+    PRIVATE
+        ocr_analysis
+)
+
+# PDF batch checker utility
+add_executable(pdfcheck
+    src/pdfcheck.cpp
+)
+
+target_link_libraries(pdfcheck
     PRIVATE
         ocr_analysis
 )

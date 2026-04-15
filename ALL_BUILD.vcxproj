@@ -182,6 +182,10 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
       <Project>{756618EE-CE0C-3569-ABDB-B5B8E378C5CC}</Project>
       <Name>ocr_demo</Name>
     </ProjectReference>
+    <ProjectReference Include="C:\OcrAnalysis\pdfcheck.vcxproj">
+      <Project>{6F7B2CA2-D962-39A7-A691-7952B1561E8D}</Project>
+      <Name>pdfcheck</Name>
+    </ProjectReference>
     <ProjectReference Include="C:\OcrAnalysis\test_bounds_modes.vcxproj">
       <Project>{16C471D4-54F4-34B1-A482-36B45576EF70}</Project>
       <Name>test_bounds_modes</Name>

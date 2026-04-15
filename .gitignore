@@ -50,3 +50,6 @@ Thumbs.db
 # Cache and IDE directories
 .cache/
 .claude/
+
+# Large label data snapshot (~199 MB)
+Friday/

@@ -1,0 +1,1 @@
+/usr/bin/bash: line 1: .debugtest_check_image.exe: command not found

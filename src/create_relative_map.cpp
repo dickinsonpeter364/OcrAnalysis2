@@ -213,7 +213,7 @@ static bool solveCropRectFromMatches(const std::vector<MatchedPair> &matches,
             << " cropWidth=" << cropWidth << " cropHeight=" << cropHeight
             << std::endl;
 
-  if (cropWidth < 10 || cropHeight < 10) {
+  if (std::abs(cropWidth) < 10 || std::abs(cropHeight) < 10) {
     std::cerr << "Solved crop dimensions too small" << std::endl;
     return false;
   }
@@ -736,26 +736,6 @@ OCRAnalysis::createRelativeMap(const PDFElements &elements,
 
       cv::Rect l1CropRect;
       if (l1Anchors.size() >= 2 && solveCropRectFromMatches(l1Anchors, l1CropRect)) {
-        // Y-scale sanity-check.
-        if (l1Bounds.width() > 0 && l1Bounds.height() > 0) {
-          double xPxPerPt = static_cast<double>(l1CropRect.width)  / l1Bounds.width();
-          double yPxPerPt = static_cast<double>(l1CropRect.height) / l1Bounds.height();
-          if (std::abs(xPxPerPt - yPxPerPt) / xPxPerPt > 0.15) {
-            int correctedHeight =
-                static_cast<int>(std::round(xPxPerPt * l1Bounds.height()));
-            double sumOffY = 0;
-            for (const auto &mp : l1Anchors)
-              sumOffY += mp.ocrCentreY - mp.relCentreY * correctedHeight;
-            int correctedY =
-                static_cast<int>(std::round(sumOffY / l1Anchors.size()));
-            std::cerr << "  L1 Y-scale corrected: cropHeight "
-                      << l1CropRect.height << " -> " << correctedHeight
-                      << ", cropY " << l1CropRect.y << " -> " << correctedY
-                      << std::endl;
-            l1CropRect.height = correctedHeight;
-            l1CropRect.y      = correctedY;
-          }
-        }
         result.cropX      = l1CropRect.x;
         result.cropY      = l1CropRect.y;
         result.cropWidth  = l1CropRect.width;
@@ -767,14 +747,47 @@ OCRAnalysis::createRelativeMap(const PDFElements &elements,
       } else {
         std::cerr << "Warning: could not solve L1 crop rect ("
                   << l1Anchors.size() << " anchor(s))" << std::endl;
+
+        // If L2 elements are available, try supplementing with their anchors.
+        // When L1 and L2 bounds describe the same physical label area the
+        // relative coordinates are interchangeable, so we can solve the crop
+        // rect from a combined L1+L2 anchor set.
+        const size_t totalElems = result.elements.size();
+        if (l1Count < totalElems) {
+          std::cerr << "Supplementing with L2 anchors..." << std::endl;
+          auto l2Supp = findAllMatchedPairs(result.elements, l1Count, totalElems, ocrWords);
+          std::cerr << "  L2 anchor candidates: " << l2Supp.size() << std::endl;
+          auto combined = l1All;
+          combined.insert(combined.end(), l2Supp.begin(), l2Supp.end());
+          auto combinedBest = findBestMatchedPairs(combined);
+          std::cerr << "  Combined best anchors: " << combinedBest.size() << std::endl;
+          if (combinedBest.size() >= 2 && solveCropRectFromMatches(combinedBest, l1CropRect)) {
+            result.cropX      = l1CropRect.x;
+            result.cropY      = l1CropRect.y;
+            result.cropWidth  = l1CropRect.width;
+            result.cropHeight = l1CropRect.height;
+            result.hasCropRect = true;
+            std::cerr << "Stored crop rect (L1+L2 combined): (" << l1CropRect.x
+                      << "," << l1CropRect.y << ") " << l1CropRect.width
+                      << "x" << l1CropRect.height << std::endl;
+          } else {
+            std::cerr << "Warning: could not solve crop rect even with L2 supplements ("
+                      << combinedBest.size() << " anchor(s))" << std::endl;
+          }
+        }
       }
 
       // ── L2 anchor matching: re-normalise L2 elements into L1 pixel space ───
       // L2 elements were initially normalised against L2 bounds; we now find
       // their actual pixel positions via OCR anchor matching and re-express
       // them in L1 relative coordinates so checkImage can use a single cropRect.
+      // Skip this step when the crop rect was solved from combined L1+L2 anchors
+      // above (in that case L2 relative coords already map correctly to the
+      // solved crop rect, and re-expression would be a near-identity transform).
       const size_t l2Count = result.elements.size() - l1Count;
-      if (l2Count > 0 && result.hasCropRect) {
+      const bool needsL2ReExpression = l2Count > 0 && result.hasCropRect
+          && l1Anchors.size() >= 2; // only when L1 solved independently
+      if (needsL2ReExpression) {
         cv::Rect l1CR(result.cropX, result.cropY,
                       result.cropWidth, result.cropHeight);
         std::cerr << "\n=== L2 OCR anchor matching ===" << std::endl;
@@ -786,19 +799,6 @@ OCRAnalysis::createRelativeMap(const PDFElements &elements,
 
         cv::Rect l2CR;
         if (l2Anchors.size() >= 2 && solveCropRectFromMatches(l2Anchors, l2CR)) {
-          // Y-scale sanity-check (same as for L1).
-          if (l2Bounds.success && l2Bounds.width() > 0 && l2Bounds.height() > 0) {
-            double xPxPerPt = static_cast<double>(l2CR.width)  / l2Bounds.width();
-            double yPxPerPt = static_cast<double>(l2CR.height) / l2Bounds.height();
-            if (std::abs(xPxPerPt - yPxPerPt) / xPxPerPt > 0.15) {
-              int correctedH = static_cast<int>(std::round(xPxPerPt * l2Bounds.height()));
-              double sumOffY = 0;
-              for (const auto &mp : l2Anchors)
-                sumOffY += mp.ocrCentreY - mp.relCentreY * correctedH;
-              l2CR.y      = static_cast<int>(std::round(sumOffY / l2Anchors.size()));
-              l2CR.height = correctedH;
-            }
-          }
           std::cerr << "L2 crop rect: (" << l2CR.x << "," << l2CR.y << ") "
                     << l2CR.width << "x" << l2CR.height << std::endl;
 
@@ -886,8 +886,9 @@ OCRAnalysis::createRelativeMap(const PDFElements &elements,
   }
 }
 
-// Static member definition.
+// Static member definitions.
 OCRAnalysis::RelativeMapResult OCRAnalysis::s_lastRelativeMap;
+OCRAnalysis::AbsoluteMapResult OCRAnalysis::s_lastAbsoluteMap;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // checkImage helpers
@@ -910,6 +911,148 @@ applyPlaceholders(const std::string &text,
     }
   }
   return result;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Shared check-image types and OCR pass helper
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// One element to verify: its expected text and pre-computed ROI in the
+/// working image.  Used by both the relative-map and absolute-map checkImage.
+struct ElemCheck {
+  size_t      idx;          ///< index into the source elements vector
+  cv::Rect    roi;          ///< pixel ROI in the working image
+  std::string elemText;    ///< original element text (for logging / debug)
+  std::string normExpected; ///< normalised expected string after placeholder sub
+};
+
+/**
+ * Runs Tesseract OCR on each ROI in @p checks and draws pass/fail annotations
+ * onto @p image.  Returns true iff every element matched.
+ */
+static bool runOCRCheckPasses(cv::Mat &image,
+                              const std::vector<ElemCheck> &checks)
+{
+  if (checks.empty())
+    return true; // nothing to verify – no Tesseract needed
+
+  tesseract::TessBaseAPI ocr;
+  if (ocr.Init("C:/tessdata/tessdata", "eng") != 0 &&
+      ocr.Init(nullptr, "eng") != 0) {
+    std::cerr << "checkImage: cannot initialise Tesseract" << std::endl;
+    return false;
+  }
+  ocr.SetPageSegMode(tesseract::PSM_SINGLE_BLOCK);
+
+  bool allMatch = true;
+  struct Marking { cv::Rect roi; bool match; };
+  std::vector<Marking> markings;
+  markings.reserve(checks.size());
+
+  // Run Tesseract on a (possibly non-contiguous) Mat and return text.
+  auto ocrMat = [&](const cv::Mat &m) -> std::string {
+    ocr.SetImage(m.data, m.cols, m.rows,
+                 m.channels(), static_cast<int>(m.step[0]));
+    ocr.Recognize(nullptr);
+    char *raw = ocr.GetUTF8Text();
+    std::string t = raw ? raw : "";
+    delete[] raw;
+    ocr.Clear();
+    return t;
+  };
+
+  // Test whether ocrText matches the normalised expected string.
+  auto isMatch = [&](const std::string &normExp,
+                     const std::string &ocrText) -> bool {
+    std::string got = normaliseForMatch(ocrText);
+    if (got.empty()) return false;
+    if (normExp == got) return true;
+    if (got.find(normExp) != std::string::npos) return true;
+    if (normExp.find(got) != std::string::npos) return true;
+    int maxDist = std::max(1, static_cast<int>(normExp.length()) / 5);
+    return levenshtein(normExp, got) <= maxDist;
+  };
+
+  for (const auto &chk : checks) {
+    cv::Mat roi = image(chk.roi);
+    std::string ocrTextInitial = ocrMat(roi);
+    bool match = isMatch(chk.normExpected, ocrTextInitial);
+
+    // Auto-pass for repeated-i sequences in fixed (non-placeholder) text.
+    if (!match && chk.elemText.find('<') == std::string::npos) {
+      if (chk.normExpected.find("ii") != std::string::npos)
+        match = true;
+    }
+
+    // Cleanup retry: only if initial match failed.
+    cv::Mat cleanedRoi;
+    std::string ocrTextCleaned;
+    bool usedCleanup = false;
+    if (!match) {
+      cv::Mat roiCopy = roi.clone();
+      cleanedRoi = OCRAnalysis::cleanupForOCR(roiCopy);
+      if (!cleanedRoi.empty()) {
+        ocrTextCleaned = ocrMat(cleanedRoi);
+        if (isMatch(chk.normExpected, ocrTextCleaned)) {
+          match = true;
+          usedCleanup = true;
+        }
+      }
+    }
+
+    const std::string &ocrText = usedCleanup ? ocrTextCleaned : ocrTextInitial;
+    std::cerr << "checkImage: [" << chk.idx << "] \"" << chk.elemText << "\""
+              << " ocr=\"" << ocrText << "\""
+              << (usedCleanup ? " (cleanup)" : "")
+              << " -> " << (match ? "OK" : "FAIL") << std::endl;
+
+#ifndef NDEBUG
+    if (!match) {
+      std::string safe = chk.elemText;
+      for (char &c : safe)
+        if (c == '<' || c == '>' || c == '/' || c == '\\' || c == ':' ||
+            c == '*' || c == '?' || c == '"' || c == '|' || c == ' ')
+          c = '_';
+
+      char idxBuf[16];
+      std::snprintf(idxBuf, sizeof(idxBuf), "%03zu", chk.idx);
+
+      std::string roiDir = "debug/roi";
+      std::filesystem::create_directories(roiDir);
+      std::string prefix = roiDir + "/roi_" + idxBuf + "_" + safe;
+
+      cv::imwrite(prefix + ".png", roi.clone());
+      if (!cleanedRoi.empty())
+        cv::imwrite(prefix + "_cleaned.png", cleanedRoi);
+
+      std::ofstream tf(prefix + ".txt");
+      if (tf.is_open()) {
+        tf << "element:      " << chk.idx << "\n"
+           << "expected:     " << chk.elemText << "\n"
+           << "norm_exp:     " << chk.normExpected << "\n"
+           << "ocr_initial:  " << ocrTextInitial << "\n"
+           << "norm_initial: " << normaliseForMatch(ocrTextInitial) << "\n";
+        if (!cleanedRoi.empty()) {
+          tf << "ocr_cleaned:  " << ocrTextCleaned << "\n"
+             << "norm_cleaned: " << normaliseForMatch(ocrTextCleaned) << "\n"
+             << "used_cleanup: " << (usedCleanup ? "yes" : "no (still failed)") << "\n";
+        }
+        tf << "result:       " << (match ? "PASS" : "FAIL") << "\n";
+      }
+    }
+#endif
+
+    markings.push_back({chk.roi, match});
+    if (!match) allMatch = false;
+  }
+
+  // Draw annotations after all matching (deferred to avoid contaminating ROIs).
+  for (const auto &m : markings)
+    cv::rectangle(image, m.roi,
+                  m.match ? cv::Scalar(0, 255, 0) : cv::Scalar(0, 0, 255), 2);
+
+  ocr.End();
+  return allMatch;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -951,12 +1094,6 @@ bool OCRAnalysis::checkImage(
 
   // ── Pass 1: compute ROI and expected text for every text element ──────────
   // No Tesseract yet – defer init until we know there is something to check.
-  struct ElemCheck {
-    size_t      idx;
-    cv::Rect    roi;
-    std::string elemText;    // original (for logging)
-    std::string normExpected; // normalised expected string
-  };
   std::vector<ElemCheck> checks;
 
   for (size_t i = 0; i < relMap.elements.size(); ++i) {
@@ -969,8 +1106,8 @@ bool OCRAnalysis::checkImage(
 
     double centreX = elem.relativeX     * cropRect.width  + cropRect.x;
     double centreY = elem.relativeY     * cropRect.height + cropRect.y;
-    double pixW    = elem.relativeWidth  * cropRect.width;
-    double pixH    = elem.relativeHeight * cropRect.height;
+    double pixW    = elem.relativeWidth  * std::abs(cropRect.width);
+    double pixH    = elem.relativeHeight * std::abs(cropRect.height);
 
     cv::Rect roi;
     if (elem.text.find('<') != std::string::npos) {
@@ -1001,142 +1138,7 @@ bool OCRAnalysis::checkImage(
     checks.push_back({i, roi, elem.text, normExpected});
   }
 
-  if (checks.empty())
-    return true; // nothing to verify – no Tesseract needed
-
-  // ── Pass 2: init Tesseract once, OCR each ROI individually ───────────────
-  tesseract::TessBaseAPI ocr;
-  if (ocr.Init("C:/tessdata/tessdata", "eng") != 0 &&
-      ocr.Init(nullptr, "eng") != 0) {
-    std::cerr << "checkImage: cannot initialise Tesseract" << std::endl;
-    return false;
-  }
-  ocr.SetPageSegMode(tesseract::PSM_SINGLE_BLOCK);
-
-  bool allMatch = true;
-  struct Marking { cv::Rect roi; bool match; };
-  std::vector<Marking> markings;
-  markings.reserve(checks.size());
-
-  // Helper: run Tesseract on a (possibly non-contiguous) Mat and return text.
-  auto ocrMat = [&](const cv::Mat &m) -> std::string {
-    ocr.SetImage(m.data, m.cols, m.rows,
-                 m.channels(), static_cast<int>(m.step[0]));
-    ocr.Recognize(nullptr);
-    char *raw = ocr.GetUTF8Text();
-    std::string t = raw ? raw : "";
-    delete[] raw;
-    ocr.Clear();
-    return t;
-  };
-
-  // Helper: test whether ocrText matches the normalised expected string.
-  auto isMatch = [&](const std::string &normExp,
-                     const std::string &ocrText) -> bool {
-    std::string got = normaliseForMatch(ocrText);
-    if (got.empty()) return false;
-    if (normExp == got) return true;
-    if (got.find(normExp) != std::string::npos) return true;
-    if (normExp.find(got) != std::string::npos) return true;
-    int maxDist = std::max(1, static_cast<int>(normExp.length()) / 5);
-    return levenshtein(normExp, got) <= maxDist;
-  };
-
-  for (const auto &chk : checks) {
-    // ── Initial OCR on raw ROI subimage ──────────────────────────────────────
-    // roi.step[0] is the parent image's row stride so Tesseract can walk rows.
-    cv::Mat roi = image(chk.roi);
-    std::string ocrTextInitial = ocrMat(roi);
-    bool match = isMatch(chk.normExpected, ocrTextInitial);
-
-    // ── Auto-pass for repeated-i sequences in non-substituted text ───────────
-    // OCR reliably confuses "ii", "iii" etc. with "(i)", "(1)", etc.
-    // If the expected (normalised) text contains "ii" or more and the element
-    // is a fixed label (not a placeholder), treat it as a pass automatically.
-    if (!match && chk.elemText.find('<') == std::string::npos) {
-      const std::string &ne = chk.normExpected;
-      if (ne.find("ii") != std::string::npos)
-        match = true;
-    }
-
-    // ── Cleanup retry: only if initial match failed ───────────────────────────
-    cv::Mat cleanedRoi;
-    std::string ocrTextCleaned;
-    bool usedCleanup = false;
-    if (!match) {
-      cv::Mat roiCopy = roi.clone(); // cleanupForOCR needs a contiguous image
-      cleanedRoi = OCRAnalysis::cleanupForOCR(roiCopy);
-      if (!cleanedRoi.empty()) {
-        ocrTextCleaned = ocrMat(cleanedRoi);
-        if (isMatch(chk.normExpected, ocrTextCleaned)) {
-          match = true;
-          usedCleanup = true;
-        }
-      }
-    }
-
-    // Winning OCR text for logging: cleanup result if it saved the match.
-    const std::string &ocrText = usedCleanup ? ocrTextCleaned : ocrTextInitial;
-
-    std::cerr << "checkImage: [" << chk.idx << "] \"" << chk.elemText << "\""
-              << " ocr=\"" << ocrText << "\""
-              << (usedCleanup ? " (cleanup)" : "")
-              << " -> " << (match ? "OK" : "FAIL") << std::endl;
-
-#ifndef NDEBUG
-    if (!match) {
-      // Sanitize element text for use as a filename component.
-      std::string safe = chk.elemText;
-      for (char &c : safe)
-        if (c == '<' || c == '>' || c == '/' || c == '\\' || c == ':' ||
-            c == '*' || c == '?' || c == '"' || c == '|' || c == ' ')
-          c = '_';
-
-      char idxBuf[16];
-      std::snprintf(idxBuf, sizeof(idxBuf), "%03zu", chk.idx);
-
-      std::string roiDir = "debug/roi";
-      std::filesystem::create_directories(roiDir);
-      std::string prefix = roiDir + "/roi_" + idxBuf + "_" + safe;
-
-      // Raw ROI image.
-      cv::imwrite(prefix + ".png", roi.clone());
-
-      // Cleaned ROI image (only written when cleanup was attempted).
-      if (!cleanedRoi.empty())
-        cv::imwrite(prefix + "_cleaned.png", cleanedRoi);
-
-      // Companion text file.
-      std::ofstream tf(prefix + ".txt");
-      if (tf.is_open()) {
-        tf << "element:      " << chk.idx << "\n"
-           << "expected:     " << chk.elemText << "\n"
-           << "norm_exp:     " << chk.normExpected << "\n"
-           << "ocr_initial:  " << ocrTextInitial << "\n"
-           << "norm_initial: " << normaliseForMatch(ocrTextInitial) << "\n";
-        if (!cleanedRoi.empty()) {
-          tf << "ocr_cleaned:  " << ocrTextCleaned << "\n"
-             << "norm_cleaned: " << normaliseForMatch(ocrTextCleaned) << "\n"
-             << "used_cleanup: " << (usedCleanup ? "yes" : "no (still failed)") << "\n";
-        }
-        tf << "result:       " << (match ? "PASS" : "FAIL") << "\n";
-      }
-    }
-#endif
-
-    markings.push_back({chk.roi, match});
-    if (!match) allMatch = false;
-  }
-
-  // ── Pass 3: draw annotations after all matching is done ──────────────────
-  // Drawing is deferred so that rectangles from earlier elements do not
-  // appear inside the ROI crop of later elements.
-  for (const auto &m : markings)
-    cv::rectangle(image, m.roi,
-                  m.match ? cv::Scalar(0, 255, 0) : cv::Scalar(0, 0, 255), 2);
-
-  ocr.End();
-  return allMatch;
+  return runOCRCheckPasses(image, checks);
 }
 
 bool OCRAnalysis::checkImage(
@@ -1144,6 +1146,157 @@ bool OCRAnalysis::checkImage(
     const std::vector<std::pair<std::string, std::string>> &placeholders)
 {
   return checkImage(s_lastRelativeMap, image, placeholders);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// createAbsoluteMap
+// ─────────────────────────────────────────────────────────────────────────────
+
+OCRAnalysis::AbsoluteMapResult OCRAnalysis::createAbsoluteMap(
+    const PDFElements &elements, const cv::Mat &image,
+    const std::string &imageFilePath, bool markImage,
+    const std::string &l1PdfPath,
+    double dpi, const std::string &l2PdfPath)
+{
+  AbsoluteMapResult absResult;
+
+  // Delegate to createRelativeMap to do all the heavy lifting (anchor OCR,
+  // crop-rect solving, rotation detection, etc.).
+  RelativeMapResult relResult = createRelativeMap(
+      elements, image, imageFilePath, markImage, l1PdfPath, dpi, l2PdfPath);
+
+  if (!relResult.success || !relResult.hasCropRect) {
+    absResult.success      = false;
+    absResult.errorMessage = relResult.errorMessage.empty()
+                             ? "createRelativeMap did not produce a crop rect"
+                             : relResult.errorMessage;
+    s_lastAbsoluteMap = absResult;
+    return absResult;
+  }
+
+  // Reproduce the same working-image dimensions as checkImage would see:
+  // cropToLabel + cwRotations CW 90° rotations.
+  cv::Mat workImg = cropToLabel(image, 50, 40, /*tightLabel=*/false);
+  if (workImg.empty()) workImg = image;
+  for (int r = 0; r < relResult.cwRotations; ++r) {
+    cv::Mat next;
+    cv::rotate(workImg, next, cv::ROTATE_90_CLOCKWISE);
+    workImg = next;
+  }
+
+  absResult.imageWidth  = workImg.cols;
+  absResult.imageHeight = workImg.rows;
+  absResult.cwRotations = relResult.cwRotations;
+
+  const double cw = relResult.cropWidth;
+  const double ch = relResult.cropHeight;
+  const double cx = relResult.cropX;
+  const double cy = relResult.cropY;
+
+  for (const auto &rel : relResult.elements) {
+    AbsoluteElement abs;
+    abs.type      = (rel.type == RelativeElement::IMAGE)
+                    ? AbsoluteElement::IMAGE : AbsoluteElement::TEXT;
+    abs.text      = rel.text;
+    abs.fontName  = rel.fontName;
+    abs.fontSize  = rel.fontSize;
+    abs.isBold    = rel.isBold;
+    abs.isItalic  = rel.isItalic;
+
+    // Centre in pixel space.
+    double pxCX = rel.relativeX * cw + cx;
+    double pxCY = rel.relativeY * ch + cy;
+
+    // Half-sizes (always positive).
+    double halfW = rel.relativeWidth  * std::abs(cw) / 2.0;
+    double halfH = rel.relativeHeight * std::abs(ch) / 2.0;
+
+    abs.x      = static_cast<int>(std::round(pxCX - halfW));
+    abs.y      = static_cast<int>(std::round(pxCY - halfH));
+    abs.width  = static_cast<int>(std::round(rel.relativeWidth  * std::abs(cw)));
+    abs.height = static_cast<int>(std::round(rel.relativeHeight * std::abs(ch)));
+
+    absResult.elements.push_back(std::move(abs));
+  }
+
+  absResult.success = true;
+  s_lastAbsoluteMap = absResult;
+  return absResult;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// checkImage(AbsoluteMapResult)
+// ─────────────────────────────────────────────────────────────────────────────
+
+bool OCRAnalysis::checkImage(
+    const AbsoluteMapResult &absMap, cv::Mat &image,
+    const std::vector<std::pair<std::string, std::string>> &placeholders)
+{
+  if (image.empty() || !absMap.success)
+    return false;
+
+  // ── Crop to backing paper and apply stored CW rotations ──────────────────
+  {
+    cv::Mat backing = OCRAnalysis::cropToLabel(image, 50, 40, /*tightLabel=*/false);
+    if (backing.empty()) {
+      std::cerr << "checkImage(abs): cropToLabel returned empty; using full image"
+                << std::endl;
+      backing = image.clone();
+    }
+    for (int r = 0; r < absMap.cwRotations; ++r) {
+      cv::Mat next;
+      cv::rotate(backing, next, cv::ROTATE_90_CLOCKWISE);
+      backing = next;
+    }
+    image = backing;
+    std::cerr << "checkImage(abs): backing crop + " << absMap.cwRotations
+              << " CW rotation(s); image now "
+              << image.cols << "x" << image.rows << std::endl;
+  }
+
+  const cv::Rect imageRect(0, 0, image.cols, image.rows);
+  constexpr double kPadFraction = 0.07;
+  constexpr double kPhPadFracY  = 0.15;
+  constexpr double kPhPadFracX  = 0.04;
+
+  // ── Pass 1: build ElemCheck list from absolute pixel coordinates ──────────
+  std::vector<ElemCheck> checks;
+
+  for (size_t i = 0; i < absMap.elements.size(); ++i) {
+    const auto &elem = absMap.elements[i];
+    if (elem.type != AbsoluteElement::TEXT) continue;
+
+    std::string expected     = applyPlaceholders(elem.text, placeholders);
+    std::string normExpected = normaliseForMatch(expected);
+    if (normExpected.empty()) continue;
+
+    double pixW = static_cast<double>(elem.width);
+    double pixH = static_cast<double>(elem.height);
+
+    cv::Rect roi;
+    if (elem.text.find('<') != std::string::npos) {
+      // Placeholder: left-anchored at token left edge, widened to fit value.
+      double valueW = std::max(pixW * 1.75,
+                               normExpected.length() * pixH * 0.65);
+      int padY  = std::max(4, static_cast<int>(std::round(pixH  * kPhPadFracY)));
+      int padX  = std::max(4, static_cast<int>(std::round(valueW * kPhPadFracX)));
+      roi = cv::Rect(elem.x - padX, elem.y - padY,
+                     static_cast<int>(std::round(valueW)) + 2 * padX,
+                     static_cast<int>(std::round(pixH)) + 2 * padY);
+    } else {
+      int padY = std::max(4, static_cast<int>(std::round(pixH * kPadFraction)));
+      int padX = std::max(4, static_cast<int>(std::round(pixW * kPadFraction)));
+      roi = cv::Rect(elem.x - padX, elem.y - padY,
+                     static_cast<int>(std::round(pixW)) + 2 * padX,
+                     static_cast<int>(std::round(pixH)) + 2 * padY);
+    }
+    roi &= imageRect;
+    if (roi.area() == 0) continue;
+
+    checks.push_back({i, roi, elem.text, normExpected});
+  }
+
+  return runOCRCheckPasses(image, checks);
 }
 
 } // namespace ocr
