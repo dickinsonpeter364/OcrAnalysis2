@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <limits>
 #include <set>
@@ -36,11 +37,15 @@
 #include <Error.h>
 #include <GfxState.h>
 #include <GlobalParams.h>
+#include <Array.h>
+#include <Dict.h>
+#include <Object.h>
 #include <OutputDev.h>
 #include <PDFDoc.h>
 #include <Page.h>
 #include <Stream.h>
 #include <TextOutputDev.h>
+#include <XRef.h>
 #include <goo/GooString.h>
 #include <tesseract/resultiterator.h>
 
@@ -361,6 +366,7 @@ OCRResult OCRAnalysis::extractTextFromPDF(const std::string &pdfPath,
     // Filter out text that is covered by subsequent opaque drawing (e.g. a
     // white rectangle painted over hidden template text).  Rasterize the page
     // at 72 DPI and discard any word whose bounding box has no dark pixels.
+    // Filtered words are saved to result.hiddenRegions for diagnostics.
     {
       constexpr double kRasterDpi  = 72.0;
       constexpr double kScale      = kRasterDpi / 72.0; // == 1.0
@@ -379,32 +385,114 @@ OCRResult OCRAnalysis::extractTextFromPDF(const std::string &pdfPath,
       const int rowStride = bmp->getRowSize();
       const unsigned char *data = bmp->getDataPtr();
 
-      pageRegions.erase(
-        std::remove_if(pageRegions.begin(), pageRegions.end(),
-          [&](const TextRegion &tr) {
-            // Convert PDF y-up bottom-left coords to pixel top-left.
-            int px = static_cast<int>(tr.preciseX * kScale);
-            int py = static_cast<int>((dispH - tr.preciseY - tr.preciseHeight) * kScale);
-            int pw = std::max(1, static_cast<int>(std::ceil(tr.preciseWidth  * kScale)));
-            int ph = std::max(1, static_cast<int>(std::ceil(tr.preciseHeight * kScale)));
-            px = std::max(0, std::min(px, bmpW - 1));
-            py = std::max(0, std::min(py, bmpH - 1));
-            pw = std::min(pw, bmpW - px);
-            ph = std::min(ph, bmpH - py);
-            for (int sy = py; sy < py + ph; ++sy) {
-              const unsigned char *row = data + sy * rowStride + px * 3;
-              for (int sx = 0; sx < pw; ++sx, row += 3) {
-                if (static_cast<int>(row[0]) + row[1] + row[2] < kDarkThresh)
-                  return false; // dark pixel found → keep this word
-              }
+      std::vector<TextRegion> kept;
+      kept.reserve(pageRegions.size());
+      for (auto &tr : pageRegions) {
+        // Convert PDF y-up bottom-left coords to pixel top-left.
+        int px = static_cast<int>(tr.preciseX * kScale);
+        int py = static_cast<int>((dispH - tr.preciseY - tr.preciseHeight) * kScale);
+        int pw = std::max(1, static_cast<int>(std::ceil(tr.preciseWidth  * kScale)));
+        int ph = std::max(1, static_cast<int>(std::ceil(tr.preciseHeight * kScale)));
+        px = std::max(0, std::min(px, bmpW - 1));
+        py = std::max(0, std::min(py, bmpH - 1));
+        pw = std::min(pw, bmpW - px);
+        ph = std::min(ph, bmpH - py);
+        bool hasDark = false;
+        for (int sy = py; sy < py + ph && !hasDark; ++sy) {
+          const unsigned char *row = data + sy * rowStride + px * 3;
+          for (int sx = 0; sx < pw; ++sx, row += 3) {
+            if (static_cast<int>(row[0]) + row[1] + row[2] < kDarkThresh) {
+              hasDark = true;
+              break;
             }
-            std::cerr << "Filtered invisible text \"" << tr.text
-                      << "\" (covered by opaque shape in PDF)" << std::endl;
-            return true; // all white → hidden by overlapping shape
-          }),
-        pageRegions.end());
+          }
+        }
+        if (hasDark) {
+          kept.push_back(std::move(tr));
+        } else {
+          std::cerr << "Filtered invisible text \"" << tr.text
+                    << "\" (covered by opaque shape in PDF)" << std::endl;
+          result.hiddenRegions.push_back(std::move(tr));
+        }
+      }
+      pageRegions = std::move(kept);
 
       delete sp;
+    }
+
+    // Also detect render-mode-3 (invisible/glyphless) text that the
+    // VisibleTextOutputDev suppressed.  Run a standard TextOutputDev to
+    // capture ALL text, then find words present there but not in pageRegions.
+    {
+      TextOutputDev allTextOut(nullptr, true, 0, false, false);
+      doc->displayPage(&allTextOut, 1, 72, 72, 0, false, true, false);
+      TextPage *allPage = allTextOut.takeText();
+
+      // Build a set of (text, x, y) from visible words for fast lookup
+      std::set<std::tuple<std::string, int, int>> visibleSet;
+      for (const auto &r : pageRegions) {
+        visibleSet.insert({r.text, r.boundingBox.x, r.boundingBox.y});
+      }
+      // Also include already-filtered hidden regions to avoid duplicates
+      for (const auto &r : result.hiddenRegions) {
+        visibleSet.insert({r.text, r.boundingBox.x, r.boundingBox.y});
+      }
+
+      for (const TextFlow *flow = allPage->getFlows(); flow;
+           flow = flow->getNext()) {
+        for (const TextBlock *blk = flow->getBlocks(); blk;
+             blk = blk->getNext()) {
+          for (const TextLine *ln = blk->getLines(); ln; ln = ln->getNext()) {
+            for (const TextWord *word = ln->getWords(); word;
+                 word = word->getNext()) {
+              if (word->getLength() == 0)
+                continue;
+              std::string text;
+              for (int ci = 0; ci < word->getLength(); ci++) {
+                const Unicode *uns = word->getChar(ci);
+                if (!uns) continue;
+                Unicode uc = *uns;
+                if (uc < 0x80) text += static_cast<char>(uc);
+                else if (uc < 0x800) {
+                  text += static_cast<char>(0xC0 | (uc >> 6));
+                  text += static_cast<char>(0x80 | (uc & 0x3F));
+                } else {
+                  text += static_cast<char>(0xE0 | (uc >> 12));
+                  text += static_cast<char>(0x80 | ((uc >> 6) & 0x3F));
+                  text += static_cast<char>(0x80 | (uc & 0x3F));
+                }
+              }
+              if (text.empty()) continue;
+
+              double xMin, yMinScr, xMax, yMaxScr;
+              word->getBBox(&xMin, &yMinScr, &xMax, &yMaxScr);
+              double pyb = dispH - yMaxScr;
+              double pyt = dispH - yMinScr;
+              double w = xMax - xMin;
+              double h = pyt - pyb;
+              int ix = static_cast<int>(xMin);
+              int iy = static_cast<int>(pyb);
+
+              if (visibleSet.count({text, ix, iy}) == 0) {
+                TextRegion region;
+                region.text = text;
+                region.boundingBox = cv::Rect(ix, iy,
+                    static_cast<int>(w), static_cast<int>(h + 0.5));
+                region.preciseX = xMin;
+                region.preciseY = pyb;
+                region.preciseWidth = w;
+                region.preciseHeight = h;
+                region.fontSize = h;
+                region.confidence = 0.0f; // render mode 3
+                result.hiddenRegions.push_back(region);
+                std::cerr << "Detected render-mode-3 invisible text \""
+                          << text << "\"" << std::endl;
+              }
+            }
+          }
+        }
+      }
+      allPage->decRefCnt();
     }
 
     // Group words into text lines if requested.
@@ -1589,10 +1677,155 @@ OCRAnalysis::extractLinesFromPDF(const std::string &pdfPath, double minLength) {
   return result;
 }
 
+// Write a copy of the PDF whose CropBox/TrimBox/BleedBox/ArtBox are shrunk
+// to the supplied content rectangle (PDF y-up coords).  Output goes to
+// "<pdfDir>/graphics/<stem>_content.pdf".  Returns true on success.
+//
+// Trim marks and other content outside the rectangle fall outside the
+// visible area when the resulting PDF is opened in a viewer.  Vector
+// content is preserved — no rasterisation occurs.
+static bool writeContentRectPDF(const std::string &pdfPath,
+                                double minX, double minY,
+                                double maxX, double maxY,
+                                std::string &outPath,
+                                std::string &errorMessage) {
+  try {
+    std::filesystem::path src(pdfPath);
+    std::filesystem::path outDir = src.parent_path() / "graphics";
+    std::filesystem::create_directories(outDir);
+    std::filesystem::path dst = outDir / (src.stem().string() + "_content.pdf");
+    outPath = dst.string();
+
+    GlobalParamsIniter gpi(nullptr);
+    auto fileName = std::make_unique<GooString>(pdfPath);
+    std::unique_ptr<PDFDoc> doc(new PDFDoc(std::move(fileName)));
+    if (!doc->isOk()) {
+      errorMessage = "Failed to open PDF for cropping: " + pdfPath;
+      return false;
+    }
+    if (doc->getNumPages() < 1) {
+      errorMessage = "PDF has no pages: " + pdfPath;
+      return false;
+    }
+
+    Page *page = doc->getPage(1);
+    if (!page) {
+      errorMessage = "Failed to get page 1";
+      return false;
+    }
+
+    XRef *xref = doc->getXRef();
+
+    auto buildBox = [&]() {
+      Object arr(new Array(xref));
+      arr.arrayAdd(Object(minX));
+      arr.arrayAdd(Object(minY));
+      arr.arrayAdd(Object(maxX));
+      arr.arrayAdd(Object(maxY));
+      return arr;
+    };
+
+    Ref pageRef = page->getRef();
+    Object pageObj = xref->fetch(pageRef.num, pageRef.gen);
+    if (!pageObj.isDict()) {
+      errorMessage = "Page object is not a dict";
+      return false;
+    }
+    Dict *pageDict = pageObj.getDict();
+
+    pageDict->set("CropBox", buildBox());
+    pageDict->set("TrimBox", buildBox());
+    pageDict->set("BleedBox", buildBox());
+    pageDict->set("ArtBox", buildBox());
+
+    xref->setModifiedObject(&pageObj, pageRef);
+
+    GooString outName(dst.string());
+    int rc = doc->saveAs(outName, writeForceRewrite);
+    if (rc != errNone) {
+      errorMessage = "PDFDoc::saveAs returned error " + std::to_string(rc);
+      return false;
+    }
+
+    // Release the underlying PDFDoc handle so the file can be re-opened by
+    // the poppler-cpp renderer below (Windows holds the file exclusive).
+    doc.reset();
+
+    // Compute physical dimensions (mm + inches).  PDF user units are points.
+    double widthPt  = maxX - minX;
+    double heightPt = maxY - minY;
+    double widthIn  = widthPt  / 72.0;
+    double heightIn = heightPt / 72.0;
+    double widthMm  = widthIn  * 25.4;
+    double heightMm = heightIn * 25.4;
+
+    // Render the cropped PDF to PNG at a fixed DPI so both L1 and L2 outputs
+    // share the same resolution.  The CropBox we just wrote restricts the
+    // rendered region to the content rectangle.
+    constexpr double kRenderDpi = 300.0;
+    std::filesystem::path pngPath =
+        outDir / (src.stem().string() + "_content.png");
+    int pngWidth = 0, pngHeight = 0;
+    bool pngOk = false;
+    {
+      std::unique_ptr<poppler::document> renderDoc(
+          poppler::document::load_from_file(dst.string()));
+      if (renderDoc && !renderDoc->is_locked() && renderDoc->pages() >= 1) {
+        std::unique_ptr<poppler::page> pg(renderDoc->create_page(0));
+        if (pg) {
+          poppler::page_renderer renderer;
+          renderer.set_render_hint(poppler::page_renderer::antialiasing, true);
+          renderer.set_render_hint(
+              poppler::page_renderer::text_antialiasing, true);
+          renderer.set_image_format(poppler::image::format_argb32);
+          poppler::image img =
+              renderer.render_page(pg.get(), kRenderDpi, kRenderDpi);
+          if (img.is_valid()) {
+            pngWidth = img.width();
+            pngHeight = img.height();
+            cv::Mat mat(pngHeight, pngWidth, CV_8UC4,
+                        const_cast<char *>(img.const_data()),
+                        img.bytes_per_row());
+            cv::Mat bgr;
+            cv::cvtColor(mat, bgr, cv::COLOR_BGRA2BGR);
+            pngOk = cv::imwrite(pngPath.string(), bgr);
+          }
+        }
+      }
+    }
+
+    // Append a single line per file to dimensions.txt in the graphics dir.
+    std::filesystem::path dimsPath = outDir / "dimensions.txt";
+    std::ofstream dimsOut(dimsPath, std::ios::app);
+    if (dimsOut) {
+      auto writeLine = [&](const std::string &name, bool withPx) {
+        dimsOut << name
+                << "  " << std::fixed << std::setprecision(2)
+                << widthMm << " x " << heightMm << " mm  ("
+                << std::setprecision(3)
+                << widthIn << " x " << heightIn << " in)";
+        if (withPx) {
+          dimsOut << "  " << pngWidth << " x " << pngHeight
+                  << " px @ " << std::setprecision(0) << kRenderDpi << " dpi";
+        }
+        dimsOut << "\n";
+      };
+      writeLine(dst.filename().string(), false);
+      if (pngOk) writeLine(pngPath.filename().string(), true);
+    }
+    return true;
+  } catch (const std::exception &e) {
+    errorMessage = std::string("writeContentRectPDF exception: ") + e.what();
+    return false;
+  }
+}
+
 OCRAnalysis::PDFElements
 OCRAnalysis::extractPDFElements(const std::string &pdfPath, double minRectSize,
                                 double minLineLength,
-                                const std::string &imageOutputDir) {
+                                const std::string &imageOutputDir,
+                                bool renderContentRectPdf,
+                                const std::string &pairPdfPath) {
   // NOTE: This function processes ONLY the first page of the PDF.
   // All sub-functions (text, images, rectangles, lines) are hardcoded to
   // page 1.  Multi-page PDFs are accepted but only page 1 is ever read.
@@ -1634,6 +1867,7 @@ OCRAnalysis::extractPDFElements(const std::string &pdfPath, double minRectSize,
         result.fullText = textResult.fullText;
         result.textLines = std::move(textResult.regions);
         result.textLineCount = static_cast<int>(result.textLines.size());
+        result.hiddenTextLines = std::move(textResult.hiddenRegions);
       } else {
         std::cerr << "DEBUG: Text extraction failed: "
                   << textResult.errorMessage << std::endl;
@@ -3138,6 +3372,126 @@ OCRAnalysis::extractPDFElements(const std::string &pdfPath, double minRectSize,
 
     result.success = true;
     std::cerr << "DEBUG: All extractions completed successfully" << std::endl;
+
+    // Optionally write a cropped copy of the PDF containing only the
+    // calculated content rectangle (LAF1: bbox of detected rectangles;
+    // LAF2: crop-mark bbox).  Mirrors the bounds-mode dispatch used by
+    // createRelativeMap so behaviour stays consistent.
+    if (renderContentRectPdf) {
+      auto startsWithCI = [](const std::string &s, const char *prefix) {
+        size_t plen = std::strlen(prefix);
+        if (s.size() < plen) return false;
+        for (size_t i = 0; i < plen; ++i)
+          if (std::tolower((unsigned char)s[i]) != prefix[i]) return false;
+        return true;
+      };
+
+      // Compute the content rect of a PDFElements according to its
+      // LAF dispatch (L1: bbox of rectangles / images; L2: crop-mark
+      // bbox).  Returns false if no bounds are available.
+      auto computeContentRect = [&](const PDFElements &elems,
+                                    const std::string &stemArg,
+                                    double &oMinX, double &oMinY,
+                                    double &oMaxX, double &oMaxY) -> bool {
+        bool isL1_ = startsWithCI(stemArg, "l1");
+        bool isL2_ = startsWithCI(stemArg, "l2");
+        if (!isL1_ && !isL2_) return false;
+        if (isL1_) {
+          double rMinX = std::numeric_limits<double>::max();
+          double rMinY = std::numeric_limits<double>::max();
+          double rMaxX = std::numeric_limits<double>::lowest();
+          double rMaxY = std::numeric_limits<double>::lowest();
+          for (const auto &rect : elems.rectangles) {
+            rMinX = std::min(rMinX, rect.x);
+            rMinY = std::min(rMinY, rect.y);
+            rMaxX = std::max(rMaxX, rect.x + rect.width);
+            rMaxY = std::max(rMaxY, rect.y + rect.height);
+          }
+          if (rMinX < std::numeric_limits<double>::max()) {
+            oMinX = rMinX; oMinY = rMinY; oMaxX = rMaxX; oMaxY = rMaxY;
+            return true;
+          }
+          if (!elems.images.empty()) {
+            double iMinX = std::numeric_limits<double>::max();
+            double iMinY = std::numeric_limits<double>::max();
+            double iMaxX = std::numeric_limits<double>::lowest();
+            double iMaxY = std::numeric_limits<double>::lowest();
+            for (const auto &img : elems.images) {
+              iMinX = std::min(iMinX, img.x);
+              iMinY = std::min(iMinY, img.y);
+              iMaxX = std::max(iMaxX, img.x + img.displayWidth);
+              iMaxY = std::max(iMaxY, img.y + img.displayHeight);
+            }
+            oMinX = iMinX; oMinY = iMinY; oMaxX = iMaxX; oMaxY = iMaxY;
+            return true;
+          }
+          return false;
+        }
+        // L2
+        if (elems.linesBoundingBoxWidth > 0 &&
+            elems.linesBoundingBoxHeight > 0) {
+          oMinX = elems.linesBoundingBoxX;
+          oMinY = elems.linesBoundingBoxY;
+          oMaxX = oMinX + elems.linesBoundingBoxWidth;
+          oMaxY = oMinY + elems.linesBoundingBoxHeight;
+          return true;
+        }
+        return false;
+      };
+
+      std::string stem = std::filesystem::path(pdfPath).filename().string();
+      double cMinX = 0, cMinY = 0, cMaxX = 0, cMaxY = 0;
+      bool haveBounds = computeContentRect(result, stem, cMinX, cMinY,
+                                           cMaxX, cMaxY);
+      if (!haveBounds) {
+        std::cerr << "DEBUG: renderContentRectPdf skipped — no bounds "
+                     "available for " << stem << std::endl;
+      } else {
+        // If a paired LAF PDF was supplied, compute its content rect
+        // too and expand this PDF's content rect vertically so both
+        // cropped outputs share the taller height.  The expansion is
+        // centred on the current content so the LAF content stays
+        // vertically centred in the cropped page.
+        if (!pairPdfPath.empty()) {
+          std::string pairStem =
+              std::filesystem::path(pairPdfPath).filename().string();
+          // Recursive call without renderContentRectPdf to avoid
+          // infinite loops.
+          PDFElements pairElems =
+              extractPDFElements(pairPdfPath, minRectSize, minLineLength,
+                                 "", false, "");
+          if (pairElems.success) {
+            double pMinX = 0, pMinY = 0, pMaxX = 0, pMaxY = 0;
+            if (computeContentRect(pairElems, pairStem,
+                                   pMinX, pMinY, pMaxX, pMaxY)) {
+              double selfH = cMaxY - cMinY;
+              double pairH = pMaxY - pMinY;
+              if (pairH > selfH) {
+                double centreY = (cMinY + cMaxY) / 2.0;
+                cMinY = centreY - pairH / 2.0;
+                cMaxY = centreY + pairH / 2.0;
+                std::cerr << "DEBUG: Expanded content rect height from "
+                          << selfH << " to " << pairH
+                          << " pt to match pair " << pairStem << std::endl;
+              }
+            }
+          } else {
+            std::cerr << "WARNING: pair PDF extraction failed: "
+                      << pairElems.errorMessage << std::endl;
+          }
+        }
+
+        std::string outPath, errMsg;
+        if (writeContentRectPDF(pdfPath, cMinX, cMinY, cMaxX, cMaxY,
+                                outPath, errMsg)) {
+          std::cerr << "DEBUG: Wrote cropped content PDF: " << outPath
+                    << std::endl;
+        } else {
+          std::cerr << "WARNING: writeContentRectPDF failed: " << errMsg
+                    << std::endl;
+        }
+      }
+    }
 
   } catch (const std::exception &e) {
     result.errorMessage =

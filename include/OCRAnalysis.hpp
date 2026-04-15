@@ -50,6 +50,7 @@ struct TextRegion {
 struct OCRResult {
   std::string fullText;            ///< Complete extracted text
   std::vector<TextRegion> regions; ///< Individual text regions
+  std::vector<TextRegion> hiddenRegions; ///< Regions filtered as invisible
   double processingTimeMs;         ///< Processing time in milliseconds
   bool success;                    ///< Whether OCR was successful
   std::string errorMessage;        ///< Error message if failed
@@ -363,6 +364,9 @@ public:
     std::vector<TextRegion>
         ignoredTextLines; ///< Text lines excluded from processing (e.g. symbol
                           ///< fonts such as Wingdings)
+    std::vector<TextRegion>
+        hiddenTextLines; ///< Text lines filtered as invisible (render mode 3
+                         ///< or covered by opaque shapes)
 
     // Embedded images
     std::vector<PDFEmbeddedImage> images; ///< Actual embedded images
@@ -414,12 +418,29 @@ public:
    * @param minLineLength Minimum line length in points (default: 5)
    * @param imageOutputDir If non-empty, save extracted images and DataMatrix
    *                       barcodes as PNG files in this directory
+   * @param renderContentRectPdf If true, also write a cropped copy of the PDF
+   *                       containing only the calculated content rectangle
+   *                       (LAF1: bounding box of detected rectangles; LAF2:
+   *                       crop-mark bounding box) into a "graphics"
+   *                       subdirectory next to the source PDF. The output
+   *                       file is named "<stem>_content.pdf" and is produced
+   *                       by rewriting the page CropBox/TrimBox/BleedBox/
+   *                       ArtBox so trim marks fall outside the visible area.
+   * @param pairPdfPath    Optional path to the paired LAF PDF (e.g. when
+   *                       processing L1, pass the L2 path and vice versa).
+   *                       When set and @p renderContentRectPdf is true, both
+   *                       PDFs' content rects are computed and the page
+   *                       height of the cropped output is expanded
+   *                       symmetrically to match the taller of the two,
+   *                       so L1 and L2 cropped PDFs share a common height.
    * @return PDFElements containing all extracted elements
    */
   PDFElements extractPDFElements(const std::string &pdfPath,
                                  double minRectSize = 5.0,
                                  double minLineLength = 5.0,
-                                 const std::string &imageOutputDir = "");
+                                 const std::string &imageOutputDir = "",
+                                 bool renderContentRectPdf = false,
+                                 const std::string &pairPdfPath = "");
 
   /**
    * @brief Extract all embedded images from a PDF and save them as PNG files
@@ -726,6 +747,30 @@ public:
     int cwRotations = 0;
   };
 
+  /// Element with absolute pixel coordinates in the working image
+  /// (after cropToLabel + cwRotations, top-left origin, y downward).
+  struct AbsoluteElement {
+    enum Type { TEXT, IMAGE };
+    Type type = TEXT;
+    std::string text;          ///< Text content (for TEXT type)
+    int x = 0, y = 0;         ///< Top-left corner in the working image (pixels)
+    int width = 0, height = 0; ///< Bounding-box dimensions (pixels)
+    std::string fontName;
+    double fontSize = 0.0;
+    bool isBold   = false;
+    bool isItalic = false;
+  };
+
+  /// Result of createAbsoluteMap: element bounding boxes in pixel coordinates.
+  struct AbsoluteMapResult {
+    bool success = false;
+    std::string errorMessage;
+    std::vector<AbsoluteElement> elements;
+    int imageWidth  = 0; ///< Working image width  (cols, after crop + rotation)
+    int imageHeight = 0; ///< Working image height (rows, after crop + rotation)
+    int cwRotations = 0; ///< CW 90° rotations applied (same as RelativeMapResult)
+  };
+
   /**
    * @brief Create a resolution-independent map of element positions
    *
@@ -789,6 +834,28 @@ public:
   /// Overload that uses the map stored by the last call to createRelativeMap.
   bool checkImage(
       cv::Mat &image,
+      const std::vector<std::pair<std::string, std::string>> &placeholders);
+
+  /**
+   * @brief Like createRelativeMap but returns element bounding boxes in
+   *        absolute pixel coordinates within the working image
+   *        (i.e. after cropToLabel and any CW rotations).
+   *
+   * Internally calls createRelativeMap and projects each element's relative
+   * position through the solved crop rect.  Fails with an empty result if
+   * anchor matching could not produce a crop rect.
+   */
+  AbsoluteMapResult createAbsoluteMap(
+      const PDFElements &elements, const cv::Mat &image,
+      const std::string &imageFilePath, bool markImage,
+      const std::string &l1PdfPath,
+      double dpi = 300.0, const std::string &l2PdfPath = "");
+
+  /// Check a photo against an absolute-coordinate map.
+  /// Identical semantics to checkImage(RelativeMapResult, …) but uses stored
+  /// pixel bounding boxes directly instead of projecting through a crop rect.
+  bool checkImage(
+      const AbsoluteMapResult &absMap, cv::Mat &image,
       const std::vector<std::pair<std::string, std::string>> &placeholders);
 
   /**
@@ -929,6 +996,8 @@ private:
 
   /// Stores the result of the most recent successful createRelativeMap call.
   static RelativeMapResult s_lastRelativeMap;
+  /// Stores the result of the most recent successful createAbsoluteMap call.
+  static AbsoluteMapResult s_lastAbsoluteMap;
 };
 
 } // namespace ocr
