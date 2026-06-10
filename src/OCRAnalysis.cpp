@@ -6200,6 +6200,12 @@ bool OCRAnalysis::alignAndMarkElements(const std::string &renderedImagePath,
       int x, y, width, height;
       std::string text;
       double fontSize; // PDF font size in points
+      // True once OCR verification has confirmed the box's text matches
+      // what Tesseract reads back. Used to colour the marking rectangle:
+      //   match + placeholder (text contains '<' or '>')  -> green
+      //   match + literal      (no '<>'                  -> blue
+      //   no match                                       -> red
+      bool matches = true;
     };
     std::vector<BoxInfo> boxes;
 
@@ -6415,24 +6421,22 @@ bool OCRAnalysis::alignAndMarkElements(const std::string &renderedImagePath,
         char *ocrText = verifyOcr->GetUTF8Text();
 
         if (ocrText) {
-          std::string detectedText(ocrText);
-          // Clean up
-          detectedText.erase(
-              std::remove_if(detectedText.begin(), detectedText.end(),
-                             [](unsigned char c) { return std::isspace(c); }),
-              detectedText.end());
-          std::transform(detectedText.begin(), detectedText.end(),
-                         detectedText.begin(),
-                         [](unsigned char c) { return std::tolower(c); });
+          // Strip whitespace AND non-alphanumerics, then lowercase, so
+          // PDF text like "Ref.Code:" matches OCR readings such as
+          // "Ref Code", "RefCode", "ref-code", etc.
+          auto canonicalise = [](std::string s) {
+            s.erase(std::remove_if(s.begin(), s.end(),
+                                   [](unsigned char c) {
+                                     return !std::isalnum(c);
+                                   }),
+                    s.end());
+            std::transform(s.begin(), s.end(), s.begin(),
+                           [](unsigned char c) { return std::tolower(c); });
+            return s;
+          };
 
-          std::string expectedText = box.text;
-          expectedText.erase(
-              std::remove_if(expectedText.begin(), expectedText.end(),
-                             [](unsigned char c) { return std::isspace(c); }),
-              expectedText.end());
-          std::transform(expectedText.begin(), expectedText.end(),
-                         expectedText.begin(),
-                         [](unsigned char c) { return std::tolower(c); });
+          std::string detectedText = canonicalise(std::string(ocrText));
+          std::string expectedText = canonicalise(box.text);
 
           // Calculate character-level similarity for fuzzy matching
           auto calculateSimilarity = [](const std::string &s1,
@@ -6467,6 +6471,7 @@ bool OCRAnalysis::alignAndMarkElements(const std::string &renderedImagePath,
               (detectedText.find(expectedText) != std::string::npos) ||
               (expectedText.find(detectedText) != std::string::npos) ||
               (similarity >= 0.7); // 70% similarity threshold
+          box.matches = matches; // remember for colour selection later
 
           std::cerr << "Element " << box.elemIdx << " \"" << box.text
                     << "\": OCR=\"" << detectedText
@@ -6544,22 +6549,23 @@ bool OCRAnalysis::alignAndMarkElements(const std::string &renderedImagePath,
     // Create a copy of the original image for marking
     cv::Mat markedImage = originalImage.clone();
 
-    // Draw adjusted bounding boxes in blue
-    cv::Scalar blueColor(255, 0, 0); // Blue in BGR
+    // TEMPORARY: OCR-based match colouring is disabled — every box is
+    // drawn in blue. The match-based colour scheme will be reintroduced
+    // once the matching logic is robust enough not to false-flag text
+    // with punctuation, alternative spacings, etc.
+    const cv::Scalar markingColour(255, 0, 0); // blue (BGR)
     int drawnCount = 0;
 
     for (const auto &box : boxes) {
-      // Clamp coordinates to original image bounds
       int drawX1 = std::max(0, std::min(box.x, originalImage.cols));
       int drawY1 = std::max(0, std::min(box.y, originalImage.rows));
       int drawX2 = std::max(0, std::min(box.x + box.width, originalImage.cols));
       int drawY2 =
           std::max(0, std::min(box.y + box.height, originalImage.rows));
 
-      // Only draw if we have a valid rectangle
       if (drawX2 > drawX1 && drawY2 > drawY1) {
         cv::rectangle(markedImage, cv::Point(drawX1, drawY1),
-                      cv::Point(drawX2, drawY2), blueColor, 2);
+                      cv::Point(drawX2, drawY2), markingColour, 2);
         drawnCount++;
       }
     }
