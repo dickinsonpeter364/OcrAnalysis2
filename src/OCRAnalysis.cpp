@@ -4147,7 +4147,7 @@ bool OCRAnalysis::setLanguage(const std::string &language) {
     m_initialized = false;
     return initialize();
   }
-
+  // ret true
   return true;
 }
 
@@ -4205,7 +4205,7 @@ cv::Mat OCRAnalysis::preprocessImage(const cv::Mat &image) {
   return processed;
 }
 
-// static
+// static 
 cv::Mat OCRAnalysis::cleanupForOCR(const cv::Mat &input,
                                     CleanupDiagnostics *diag) {
   if (input.empty())
