@@ -4207,7 +4207,7 @@ cv::Mat OCRAnalysis::preprocessImage(const cv::Mat &image) {
 
 // static
 cv::Mat OCRAnalysis::cleanupForOCR(const cv::Mat &input,
-                                    CleanupDiagnostics *diag = nullptr) {
+                                    CleanupDiagnostics *diag) {
   if (input.empty())
     return {};
 
