@@ -18,36 +18,51 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # Export compile commands for IDE support
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-# vcpkg root (supports override from env var)
-if(DEFINED ENV{VCPKG_ROOT} AND NOT "$ENV{VCPKG_ROOT}" STREQUAL "")
+set(VCPKG_TRIPLET "x64-windows")
+
+# Resolve vcpkg root for machine-portable builds.
+# Prefer the team-standard C:/vcpkg when present; otherwise use VCPKG_ROOT.
+if(EXISTS "C:/vcpkg/installed/${VCPKG_TRIPLET}")
+    set(VCPKG_ROOT "C:/vcpkg")
+elseif(DEFINED ENV{VCPKG_ROOT} AND EXISTS "$ENV{VCPKG_ROOT}/installed/${VCPKG_TRIPLET}")
     set(VCPKG_ROOT "$ENV{VCPKG_ROOT}")
 else()
     set(VCPKG_ROOT "C:/vcpkg")
 endif()
+file(TO_CMAKE_PATH "${VCPKG_ROOT}" VCPKG_ROOT)
 
-list(PREPEND CMAKE_PREFIX_PATH "${VCPKG_ROOT}/installed/x64-windows")
+set(VCPKG_INSTALLED_DIR "${VCPKG_ROOT}/installed/${VCPKG_TRIPLET}")
 
-if(NOT PKG_CONFIG_EXECUTABLE)
-    if(EXISTS "${VCPKG_ROOT}/installed/x64-windows/tools/pkgconf/pkgconf.exe")
-        set(PKG_CONFIG_EXECUTABLE "${VCPKG_ROOT}/installed/x64-windows/tools/pkgconf/pkgconf.exe")
-    endif()
-endif()
-
-set(ENV{PKG_CONFIG_PATH}
-    "${VCPKG_ROOT}/installed/x64-windows/lib/pkgconfig;${VCPKG_ROOT}/installed/x64-windows/share/pkgconfig"
-)
-
-# Help CMake find OpenCV when building from generated VS projects without presets.
+# Help CMake package discovery (OpenCV, etc.) when the generator was not started
+# with an explicit toolchain file.
+list(PREPEND CMAKE_PREFIX_PATH "${VCPKG_INSTALLED_DIR}")
 if(NOT OpenCV_DIR)
-    if(EXISTS "${VCPKG_ROOT}/installed/x64-windows/share/opencv4/OpenCVConfig.cmake")
-        set(OpenCV_DIR "${VCPKG_ROOT}/installed/x64-windows/share/opencv4")
-    elseif(EXISTS "${VCPKG_ROOT}/installed/x64-windows/share/opencv/OpenCVConfig.cmake")
-        set(OpenCV_DIR "${VCPKG_ROOT}/installed/x64-windows/share/opencv")
+    if(EXISTS "${VCPKG_INSTALLED_DIR}/share/opencv4/OpenCVConfig.cmake")
+        set(OpenCV_DIR "${VCPKG_INSTALLED_DIR}/share/opencv4")
+    elseif(EXISTS "${VCPKG_INSTALLED_DIR}/share/opencv/OpenCVConfig.cmake")
+        set(OpenCV_DIR "${VCPKG_INSTALLED_DIR}/share/opencv")
     endif()
 endif()
+
+# Ensure pkg-config can resolve .pc files from vcpkg on Windows.
+set(_pkgconf_candidates
+    "${VCPKG_INSTALLED_DIR}/tools/pkgconf/pkgconf.exe"
+    "${VCPKG_ROOT}/tools/pkgconf/pkgconf.exe"
+)
+foreach(_pkgconf_path IN LISTS _pkgconf_candidates)
+    if(EXISTS "${_pkgconf_path}")
+        set(PKG_CONFIG_EXECUTABLE "${_pkgconf_path}" CACHE FILEPATH "pkg-config executable" FORCE)
+        break()
+    endif()
+endforeach()
+set(ENV{PKG_CONFIG_PATH}
+    "${VCPKG_INSTALLED_DIR}/lib/pkgconfig;${VCPKG_INSTALLED_DIR}/debug/lib/pkgconfig;${VCPKG_INSTALLED_DIR}/share/pkgconfig;$ENV{PKG_CONFIG_PATH}")
+
+message(STATUS "Using VCPKG_ROOT: ${VCPKG_ROOT}")
+message(STATUS "Using vcpkg triplet: ${VCPKG_TRIPLET}")
 
 # Find required packages
-find_package(OpenCV REQUIRED)
+find_package(OpenCV CONFIG REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(TESSERACT REQUIRED tesseract)
 pkg_check_modules(LEPTONICA REQUIRED lept)
@@ -110,8 +125,8 @@ if(ZXING_FOUND)
 endif()
 
 # vcpkg release/debug library directories
-set(VCPKG_REL_LIBDIR "${VCPKG_ROOT}/installed/x64-windows/lib")
-set(VCPKG_DBG_LIBDIR "${VCPKG_ROOT}/installed/x64-windows/debug/lib")
+set(VCPKG_REL_LIBDIR "${VCPKG_INSTALLED_DIR}/lib")
+set(VCPKG_DBG_LIBDIR "${VCPKG_INSTALLED_DIR}/debug/lib")
 
 target_link_libraries(ocr_analysis
     PUBLIC
@@ -349,7 +364,7 @@ target_link_libraries(pdfcheck
 # with 0x8007007E ("the specified module could not be found"). copy_if_different
 # keeps repeat builds cheap; the ALL target makes it run on every build.
 set(LVS_RUNTIME_DIR   "$<IF:$<CONFIG:Debug>,C:/lvsrun/Debug,C:/lvsrun/Release>")
-set(VCPKG_RUNTIME_BIN "$<IF:$<CONFIG:Debug>,${VCPKG_ROOT}/installed/x64-windows/debug/bin,${VCPKG_ROOT}/installed/x64-windows/bin>")
+set(VCPKG_RUNTIME_BIN "$<IF:$<CONFIG:Debug>,${VCPKG_INSTALLED_DIR}/debug/bin,${VCPKG_INSTALLED_DIR}/bin>")
 
 add_custom_target(deploy_lvs_runtime ALL
     COMMAND ${CMAKE_COMMAND} -E make_directory "${LVS_RUNTIME_DIR}"
