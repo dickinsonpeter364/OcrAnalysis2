@@ -1,13 +1,14 @@
 cmake_minimum_required(VERSION 3.16)
 project(OcrAnalysis VERSION 1.0.0 LANGUAGES CXX)
 
-# Redirect build outputs and dependencies
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_DEBUG "C:/lvsrrun/debug")
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE "C:/lvsrrun/release")
-set(CMAKE_LIBRARY_OUTPUT_DIRECTORY_DEBUG "C:/lvsrrun/debug")
-set(CMAKE_LIBRARY_OUTPUT_DIRECTORY_RELEASE "C:/lvsrrun/release")
-set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_DEBUG "C:/lvsrrun/debug")
-set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_RELEASE "C:/lvsrrun/release")
+# Redirect build outputs and dependencies into the canonical LVS run folders.
+# (Was "C:/lvsrrun" - a typo that sent outputs to a stray directory.)
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_DEBUG "C:/lvsrun/Debug")
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE "C:/lvsrun/Release")
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY_DEBUG "C:/lvsrun/Debug")
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY_RELEASE "C:/lvsrun/Release")
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_DEBUG "C:/lvsrun/Debug")
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_RELEASE "C:/lvsrun/Release")
 
 # Set C++ standard (C++20 required for Poppler's low-level API)
 set(CMAKE_CXX_STANDARD 20)
@@ -313,6 +314,22 @@ target_link_libraries(pdfcheck
     PRIVATE
         ocr_analysis
 )
+
+# Always deploy the native runtime dependencies next to the LVS binaries so a
+# freshly cloned/built machine has every module the COM servers and executables
+# need at load time. Without this, regsvr32 and reg-free COM activation fail
+# with 0x8007007E ("the specified module could not be found"). copy_if_different
+# keeps repeat builds cheap; the ALL target makes it run on every build.
+set(LVS_RUNTIME_DIR   "$<IF:$<CONFIG:Debug>,C:/lvsrun/Debug,C:/lvsrun/Release>")
+set(VCPKG_RUNTIME_BIN "$<IF:$<CONFIG:Debug>,C:/vcpkg/installed/x64-windows/debug/bin,C:/vcpkg/installed/x64-windows/bin>")
+
+add_custom_target(deploy_lvs_runtime ALL
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${LVS_RUNTIME_DIR}"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory "${VCPKG_RUNTIME_BIN}" "${LVS_RUNTIME_DIR}"
+    COMMENT "Deploying vcpkg native runtime DLLs to ${LVS_RUNTIME_DIR}"
+    VERBATIM
+)
+add_dependencies(deploy_lvs_runtime ocr_analysis)
 
 # Optional: Install targets
 install(TARGETS ocr_analysis ocr_demo

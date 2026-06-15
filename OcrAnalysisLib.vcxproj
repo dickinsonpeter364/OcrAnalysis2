@@ -171,4 +171,32 @@
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>
+
+  <!-- OcrAnalysisLib itself is a static .lib (a build-time input to
+       ImageProcessorCom, not a runtime artifact), but this project owns the
+       knowledge of the native runtime stack it pulls in (poppler, opencv,
+       tesseract, leptonica, zxing and their transitive deps). Deploy the
+       config-matched vcpkg runtime DLLs into C:\lvsrun\{Debug|Release} so the
+       LVS executables and the COM servers always have every dependent module
+       present at load time - this is what prevents the 0x8007007E
+       "specified module could not be found" failure on a freshly cloned
+       machine. -->
+  <Target Name="DeployLvsNativeRuntime" AfterTargets="Build">
+    <PropertyGroup>
+      <VcpkgRuntimeBinDir Condition="'$(Configuration)' == 'Debug'">C:\vcpkg\installed\x64-windows\debug\bin\</VcpkgRuntimeBinDir>
+      <VcpkgRuntimeBinDir Condition="'$(Configuration)' != 'Debug'">C:\vcpkg\installed\x64-windows\bin\</VcpkgRuntimeBinDir>
+      <LvsRuntimeDir Condition="'$(Configuration)' == 'Debug'">C:\lvsrun\Debug\</LvsRuntimeDir>
+      <LvsRuntimeDir Condition="'$(Configuration)' != 'Debug'">C:\lvsrun\Release\</LvsRuntimeDir>
+    </PropertyGroup>
+    <ItemGroup>
+      <_LvsNativeDll Include="$(VcpkgRuntimeBinDir)*.dll" Condition="Exists('$(VcpkgRuntimeBinDir)')" />
+    </ItemGroup>
+    <MakeDir Directories="$(LvsRuntimeDir)" />
+    <Copy SourceFiles="@(_LvsNativeDll)"
+          DestinationFolder="$(LvsRuntimeDir)"
+          SkipUnchangedFiles="true"
+          Condition="'@(_LvsNativeDll)' != ''" />
+    <Message Importance="high"
+             Text="Deployed vcpkg native runtime DLLs to $(LvsRuntimeDir)" />
+  </Target>
 </Project>
