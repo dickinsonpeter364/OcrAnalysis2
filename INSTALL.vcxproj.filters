@@ -1,13 +1,13 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
-    <CustomBuild Include="C:\ocranalysis\CMakeFiles\f2ae8ae8a77df9e580d2e0c6096a01e3\INSTALL_force.rule">
+    <CustomBuild Include="C:\OCRAnalysis\CMakeFiles\09d290ff13a71536dd10d5ea3a51acaf\INSTALL_force.rule">
       <Filter>CMake Rules</Filter>
     </CustomBuild>
   </ItemGroup>
   <ItemGroup>
     <Filter Include="CMake Rules">
-      <UniqueIdentifier>{379CA2AD-E3BA-3777-8FDE-89243C5CA5E7}</UniqueIdentifier>
+      <UniqueIdentifier>{2310635C-0D49-300E-941B-E1C340E8F04A}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
 </Project>

@@ -18,6 +18,34 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # Export compile commands for IDE support
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# vcpkg root (supports override from env var)
+if(DEFINED ENV{VCPKG_ROOT} AND NOT "$ENV{VCPKG_ROOT}" STREQUAL "")
+    set(VCPKG_ROOT "$ENV{VCPKG_ROOT}")
+else()
+    set(VCPKG_ROOT "C:/vcpkg")
+endif()
+
+list(PREPEND CMAKE_PREFIX_PATH "${VCPKG_ROOT}/installed/x64-windows")
+
+if(NOT PKG_CONFIG_EXECUTABLE)
+    if(EXISTS "${VCPKG_ROOT}/installed/x64-windows/tools/pkgconf/pkgconf.exe")
+        set(PKG_CONFIG_EXECUTABLE "${VCPKG_ROOT}/installed/x64-windows/tools/pkgconf/pkgconf.exe")
+    endif()
+endif()
+
+set(ENV{PKG_CONFIG_PATH}
+    "${VCPKG_ROOT}/installed/x64-windows/lib/pkgconfig;${VCPKG_ROOT}/installed/x64-windows/share/pkgconfig"
+)
+
+# Help CMake find OpenCV when building from generated VS projects without presets.
+if(NOT OpenCV_DIR)
+    if(EXISTS "${VCPKG_ROOT}/installed/x64-windows/share/opencv4/OpenCVConfig.cmake")
+        set(OpenCV_DIR "${VCPKG_ROOT}/installed/x64-windows/share/opencv4")
+    elseif(EXISTS "${VCPKG_ROOT}/installed/x64-windows/share/opencv/OpenCVConfig.cmake")
+        set(OpenCV_DIR "${VCPKG_ROOT}/installed/x64-windows/share/opencv")
+    endif()
+endif()
+
 # Find required packages
 find_package(OpenCV REQUIRED)
 find_package(PkgConfig REQUIRED)
@@ -82,8 +110,8 @@ if(ZXING_FOUND)
 endif()
 
 # vcpkg release/debug library directories
-set(VCPKG_REL_LIBDIR "C:/vcpkg/installed/x64-windows/lib")
-set(VCPKG_DBG_LIBDIR "C:/vcpkg/installed/x64-windows/debug/lib")
+set(VCPKG_REL_LIBDIR "${VCPKG_ROOT}/installed/x64-windows/lib")
+set(VCPKG_DBG_LIBDIR "${VCPKG_ROOT}/installed/x64-windows/debug/lib")
 
 target_link_libraries(ocr_analysis
     PUBLIC
@@ -321,7 +349,7 @@ target_link_libraries(pdfcheck
 # with 0x8007007E ("the specified module could not be found"). copy_if_different
 # keeps repeat builds cheap; the ALL target makes it run on every build.
 set(LVS_RUNTIME_DIR   "$<IF:$<CONFIG:Debug>,C:/lvsrun/Debug,C:/lvsrun/Release>")
-set(VCPKG_RUNTIME_BIN "$<IF:$<CONFIG:Debug>,C:/vcpkg/installed/x64-windows/debug/bin,C:/vcpkg/installed/x64-windows/bin>")
+set(VCPKG_RUNTIME_BIN "$<IF:$<CONFIG:Debug>,${VCPKG_ROOT}/installed/x64-windows/debug/bin,${VCPKG_ROOT}/installed/x64-windows/bin>")
 
 add_custom_target(deploy_lvs_runtime ALL
     COMMAND ${CMAKE_COMMAND} -E make_directory "${LVS_RUNTIME_DIR}"
