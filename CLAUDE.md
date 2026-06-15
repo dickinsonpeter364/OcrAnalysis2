@@ -15,7 +15,7 @@ Replace `<TARGET>` with the project name (e.g. `test_png_render`, `test_check_im
 ## Run tests
 
 ```sh
-cd c:\OcrAnalysis && powershell -Command ".\debug\<TEST_EXE> <args> 2>&1 | Out-String"
+cd c:\OcrAnalysis && powershell -Command "c:\lvsrrun\debug\<TEST_EXE> <args> 2>&1 | Out-String"
 ```
 
 ## Project structure

@@ -1,6 +1,14 @@
 cmake_minimum_required(VERSION 3.16)
 project(OcrAnalysis VERSION 1.0.0 LANGUAGES CXX)
 
+# Redirect build outputs and dependencies
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_DEBUG "C:/lvsrrun/debug")
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE "C:/lvsrrun/release")
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY_DEBUG "C:/lvsrrun/debug")
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY_RELEASE "C:/lvsrrun/release")
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_DEBUG "C:/lvsrrun/debug")
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_RELEASE "C:/lvsrrun/release")
+
 # Set C++ standard (C++20 required for Poppler's low-level API)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
